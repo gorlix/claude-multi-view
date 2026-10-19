@@ -1,8 +1,134 @@
 # multi-view
 
-Una mod di Claude Code (plugin con hooks module TypeScript) che dà una vista comoda per lavorare con più chat e più agenti insieme. Versione 0.3.0.
+Una mod di Claude Code (plugin con hooks module TypeScript) che dà una vista comoda per lavorare con più chat e più agenti insieme. Versione 0.4.0.
 
-Pensata per il terminale, in particolare dentro tmux: una banda sopra il prompt con i dati che servono a colpo d'occhio, un pannello "Agenti" con l'albero degli agenti, le sessioni salvate del workspace e i task PACA, e dei toast quando succede qualcosa mentre guardi altrove.
+Pensata per il terminale, in particolare dentro tmux: una banda sopra il prompt con i dati che servono a colpo d'occhio, un pannello "Agenti" con l'albero degli agenti, le sessioni salvate del workspace e i task PACA, e dei toast quando succede qualcosa mentre guardi altrove. Dentro tmux, in più, la finestra prende il titolo della chat.
+
+## Come appare
+
+I disegni sono ricavati dal codice di rendering (`hooks/register.tsx`, `hooks/ui.ts`), con dati inventati. I colori non si vedono in ASCII: sono annotati sotto ogni disegno e riassunti nella legenda in fondo.
+
+### Banda sopra il prompt
+
+Nel terminale è una sola riga; qui è spezzata per stare in pagina. I segmenti, da sinistra a destra, compaiono solo quando hanno qualcosa da dire:
+
+```
+5h ▰▰▰▰▱▱▱▱ 42% 2h10m │ sett ▰▰▱▱▱▱▱▱ 18% 4g3h │ ctx ▰▰▱▱▱▱▱▱ 34% │
+chat: homelab │  HOME-12  In Progress: Scheda cluster nel pannello │
+● 2 ◐ 1 / 3 │ ✉ 2 │ Sessioni
+```
+
+1. `5h ...` e `sett ...`: i limiti di utilizzo, barra a 8 celle, percentuale, tempo al reset. Colori: barra e percentuale verdi, gialle da 80%, rosse da 90%; nome, celle vuote e tempo al reset attenuati.
+2. `ctx ...`: contesto della chat. Verde, giallo da 60%, rosso da 80%.
+3. `chat: homelab`: ultima cartella del percorso di lavoro, attenuata.
+4. ` HOME-12 ` e `In Progress: ...`: il task PACA attivo. Il riferimento è un badge in inverse blu, stato e titolo (tagliato a 40 caratteri) in blu.
+5. `● 2 ◐ 1 / 3`: agenti attivi (verde), idle (giallo), totale (attenuato).
+6. `✉ 2`: messaggi in coda nell'inbox, in giallo.
+7. `Sessioni`: pulsante che apre l'elenco delle sessioni salvate.
+
+Quando guardi la trascrizione di un agente la coda della banda diventa:
+
+```
+... │ ● 2 ◐ 1 / 3 │ Sessioni │ vista: scrivi-test │ Torna
+```
+
+`vista: ...` è in ciano, `Torna` è un pulsante e riporta alla conversazione principale. Se la sessione non ha ancora ricevuto una risposta mancano limiti e `ctx`; senza agenti, task attivo e messaggi mancano i rispettivi segmenti.
+
+### Pannello "Agenti"
+
+Sezioni con bordo arrotondato e titolo in grassetto, nell'ordine in cui compaiono; ognuna c'è solo se ha contenuto (Agenti e Sessioni ci sono sempre, PACA solo se il workspace è agganciato). Qui sono tutte aperte, in un pannello largo 56 colonne:
+
+```
+╭──────────────────────────────────────────────────────╮
+│ Limiti                                               │
+│ 5h   ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 42%                    │
+│      reset tra 2h10m                                 │
+│ sett ▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 18%                    │
+│      reset tra 4g3h                                  │
+╰──────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────╮
+│ Agenti                                               │
+│ ▸ Conversazione principale                           │
+│ ● rifattorizza-banda   running · general-purpose     │
+│ ├─ ● scrivi-test       running · general-purpose     │
+│ ├─ ◐ controlla-tipi    idle · Explore                │
+│ └─ ✓ revisione         completed · general-purpose   │
+│ ✗ migra-store          failed · general-purpose      │
+╰──────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────╮
+│ Sessioni                                             │
+│ ▾ Sessioni del workspace                             │
+│   ● Mod UI multi-agent (questa)                      │
+│   ○  HOME-16  Pannello verticali   5m fa             │
+│   ○  HOME-12  Scheda cluster   3h fa                 │
+│   ○ Appunti sul backup notturno   2g fa              │
+╰──────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────╮
+│ PACA                                                 │
+│ ▾ Home (3 aperti · 12 backlog)                       │
+│  HOME-12  In Progress                                │
+│   Scheda cluster nel pannello                        │
+│   └ Lavora qui │ Nuova chat │ Copia ref              │
+│  HOME-16  Todo                                       │
+│   Pannello verticali                                 │
+│   └ Lavora qui │ Nuova chat │ Copia ref              │
+╰──────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────╮
+│ ✉ Messaggi (2)                                       │
+│ altra sessione › Ho finito il refactor di st…        │
+│ verticale-acme › Riepilogo pronto, vedi il br…       │
+│ Svuota inbox                                         │
+╰──────────────────────────────────────────────────────╯
+```
+
+Nel disegno gli stati degli agenti sono incolonnati per leggibilità; nel pannello reale seguono il nome dopo uno spazio.
+
+- **Limiti** (bordo grigio): la barra si allarga con il pannello, da 8 a 24 celle (qui 24); sotto, `reset tra ...` attenuato.
+- **Agenti** (bordo verde): `Conversazione principale` è un pulsante, con `▸` quando è la vista corrente. Ogni agente ha il glifo di stato, un pulsante col nome (`▸` davanti se è quello in vista) e a destra `stato · tipo`. Senza agenti compare `Nessun agente in questa sessione.`
+- **Sessioni** (bordo ciano): il pulsante `Sessioni del workspace` apre e chiude l'elenco (massimo 12, dalla più recente). La sessione corrente è attenuata e non cliccabile. Il badge `HOME-16` è in inverse, blu se è il task attivo di questa chat, altrimenti col colore del terminale. L'età (`5m fa`) è attenuata.
+- **PACA** (bordo blu): il pulsante riassume `<progetto> (N aperti · M backlog)`. Aperto, mostra fino a 10 task: badge del riferimento in inverse e stato dello stesso colore (blu, magenta o giallo secondo la categoria), titolo sotto, poi i tre pulsanti separati da `│` attenuato.
+- **Messaggi** (bordo giallo): gli ultimi 5, `mittente › testo` su una riga sola (mittente in giallo, tagliato a 20 caratteri); il pulsante `Svuota inbox` li cancella.
+
+### Finestre tmux col titolo della chat
+
+Dentro tmux la mod rinomina la finestra con il titolo della chat, così la barra di stato dice a colpo d'occhio che cosa c'è in ogni finestra:
+
+```
+ 0:Mod UI multi-agent  1:home-16-pannello  2:MCP Proxmox e cluster·1e8d3308
+```
+
+La finestra `0` è una chat rinominata dalla mod, la `1` ha il nome scelto a mano (per esempio lo slug di una chat verticale: la mod non la tocca), la `2` è una sessione ripresa dall'elenco, con il suffisso `·` e i primi 8 caratteri dell'id.
+
+### Legenda
+
+| Glifo | Dove | Significato |
+|---|---|---|
+| `●` verde | agenti | `running`: l'agente sta lavorando |
+| `●` ciano | agenti | `pending` o `waiting` |
+| `◐` giallo | agenti | `idle`: fermo, in attesa |
+| `✓` attenuato | agenti | `completed` |
+| `✗` rosso | agenti | `failed` |
+| `■` attenuato | agenti | `killed` |
+| `·` attenuato | agenti | stato sconosciuto |
+| `●` / `○` | sessioni | `●` è la chat corrente (non cliccabile), `○` una sessione riprendibile |
+| `▰` / `▱` | barre | cella piena / vuota; con un uso maggiore di 0 c'è sempre almeno una cella piena |
+| `▸` / `▾` | pannello | sezione chiusa / aperta; davanti a una riga indica la vista corrente |
+| `✉` | banda, pannello | messaggi in arrivo da altre sessioni |
+| `├─` `└─` `│` | agenti | connettori dell'albero |
+
+Le barre di limiti e contesto hanno soglie diverse:
+
+| Barra | Verde | Giallo | Rosso |
+|---|---|---|---|
+| Limiti 5h e `sett` | sotto 80% | da 80% | da 90% |
+| Contesto `ctx` | sotto 60% | da 60% | da 80% |
+
+Altri colori:
+
+- Etichetta del task PACA (colori invertiti): blu per `inprogress`, magenta per `refinement`, giallo per `todo`. Nella banda è sempre blu; nell'elenco sessioni è blu solo se è il task attivo, altrimenti neutra.
+- Bordo delle sezioni del pannello: grigio Limiti, verde Agenti, ciano Sessioni, blu PACA, giallo Messaggi.
+- Riga di un agente `failed`: stato in rosso; `idle`, `completed` e `killed` hanno lo stato attenuato.
+- `vista: <nome>` in ciano.
 
 ## Funzioni
 
@@ -33,6 +159,12 @@ Il pannello è fatto di sezioni con bordo arrotondato e titolo colorato, solo qu
 4. **PACA**: visibile solo se il workspace è agganciato a un progetto.
 5. **Messaggi**: gli ultimi 5 messaggi dell'inbox, con mittente e testo su una riga, e il pulsante **Svuota inbox**.
 
+### Titolo della chat sulla finestra tmux
+
+Novità della 0.4.0. Dentro tmux (serve `TMUX_PANE`) la finestra non resta "claude": prende il titolo della sessione, lo stesso che si vede nell'elenco delle sessioni (ultimo `/rename`, poi titolo automatico, poi primo prompt), letto con `hooks/session_title.py`, tagliato a 30 caratteri. Succede all'avvio della sessione e alla fine di ogni turno. Il suffisso `·<id8>` di una finestra aperta con la ripresa di una sessione viene mantenuto, perché serve a riconoscerla.
+
+La mod rinomina solo finestre che può considerare sue: quelle che tmux rinomina ancora in automatico (`automatic-rename` non spento), quelle aperte dalla mod per una ripresa (nome con il suffisso), o quelle che ha già rinominato lei. Una finestra con un nome scelto a mano, per esempio lo slug di una chat verticale aperta con `-n`, resta com'è. Il comando `/titolo-finestra` forza la rinomina anche in questo caso. Fuori da tmux non fa niente e il comando risponde `Non sei in tmux.`
+
 ### Notifiche (toast)
 
 - **Agente finito**: quando un agente passa da attivo (`pending`, `running`, `waiting`) a terminato (`completed`, `failed`, `killed`, `idle`), per esempio `Agente completed: nome`.
@@ -45,9 +177,9 @@ Il pannello è fatto di sezioni con bordo arrotondato e titolo colorato, solo qu
 
 Claude Code salva ogni sessione in `~/.claude/projects/<cwd>/<sessionId>.jsonl`, dove `<cwd>` è il percorso di lavoro con ogni carattere non alfanumerico sostituito da `-`. La mod lo ricostruisce e lo legge con `hooks/list_sessions.py`, lanciato con `python3 -I`.
 
-Il titolo di ogni sessione viene da, in ordine: l'ultimo `custom-title` (quello di `/rename`), l'ultimo `ai-title`, l'ultimo `last-prompt`, altrimenti `(senza titolo)`; si usa solo la prima riga. L'elenco è ordinato dalla più recente e il pannello ne mostra 12, con quanto tempo fa sono state modificate (`5m fa`, `3h fa`, `2g fa`). Le sessioni sono precedute da `○`, con l'età attenuata a fianco. Se il workspace è agganciato a un progetto PACA, accanto al titolo c'è il task su cui la sessione ha lavorato, come etichetta a colori invertiti (blu se è il task attivo di questa chat): `list_sessions.py` riceve `--prefix <PREFISSO>` e prende l'ultimo riferimento di quel prefisso trovato nei prompt dell'utente e negli input dei tool PACA, Bash e Skill (non nei risultati dei tool, che elencano molti task), così `ADR-010` o `UTF-8` non contano. La sessione corrente appare come `● titolo (questa)` e non è cliccabile.
+Il titolo di ogni sessione viene da, in ordine: l'ultimo `custom-title` (quello di `/rename`), l'ultimo `ai-title`, l'ultimo `last-prompt`, altrimenti `(senza titolo)`; si usa solo la prima riga. L'elenco è ordinato dalla più recente e il pannello ne mostra 12, con quanto tempo fa sono state modificate (`5m fa`, `3h fa`, `2g fa`). Le sessioni sono precedute da `○`, con l'età attenuata a fianco. Se il workspace è agganciato a un progetto PACA, davanti al titolo c'è il task su cui la sessione ha lavorato, come etichetta a colori invertiti (blu se è il task attivo di questa chat): `list_sessions.py` riceve `--prefix <PREFISSO>` e prende l'ultimo riferimento di quel prefisso trovato nei prompt dell'utente e negli input dei tool PACA, Bash e Skill (non nei risultati dei tool, che elencano molti task), così `ADR-010` o `UTF-8` non contano. La sessione corrente appare come `● titolo (questa)` e non è cliccabile.
 
-Click su una sessione: dentro tmux apre una nuova finestra (`tmux new-window`, nella stessa cartella, col titolo come nome) che lancia `claude --resume <id>`. Il nome della finestra finisce con `·` e i primi 8 caratteri dell'id: prima di aprirne una nuova la mod cerca quel suffisso con `tmux list-windows`, e se la sessione è già aperta salta a quella finestra (`Già aperta: salto alla finestra`) invece di duplicarla. Fuori da tmux copia il comando negli appunti e lo segnala con un toast. Una mod non può cambiare la sessione del processo in cui gira, per questo si passa da una nuova finestra.
+Click su una sessione: dentro tmux apre una nuova finestra (`tmux new-window`, nella stessa cartella, col titolo tagliato a 24 caratteri come nome) che lancia `claude --resume <id>`. Il nome della finestra finisce con `·` e i primi 8 caratteri dell'id: prima di aprirne una nuova la mod cerca quel suffisso con `tmux list-windows`, e se la sessione è già aperta salta a quella finestra (`Già aperta: salto alla finestra`) invece di duplicarla. Fuori da tmux copia il comando negli appunti e lo segnala con un toast. Una mod non può cambiare la sessione del processo in cui gira, per questo si passa da una nuova finestra.
 
 ### Integrazione PACA
 
@@ -82,6 +214,7 @@ Per ogni task ci sono tre pulsanti:
 | `/paca-link <PREFISSO> [server MCP]` | Collega il workspace al progetto con quel prefisso (maiuscolo automatico), opzionalmente su un server MCP preciso. Esempio: `/paca-link HOME paca-homelab`. |
 | `/paca-link auto` | Cancella il collegamento e torna all'aggancio automatico via remote git. |
 | `/paca-link off` | Disattiva PACA per questo workspace. |
+| `/titolo-finestra` | Rinomina subito la finestra tmux col titolo della chat, anche se ha un nome scelto a mano. |
 | `/inbox-clear` | Svuota i messaggi arrivati da altre sessioni. |
 
 Il comando non si chiama `/paca` perché esiste già una skill `paca` con quel nome e la registrazione fallirebbe. Ogni comando è registrato a sé: se un nome è occupato, la mod avvisa con un toast e gli altri funzionano lo stesso.
@@ -126,18 +259,19 @@ Struttura:
 claude-multi-view/
 ├── .claude-plugin/
 │   ├── plugin.json        # nome, versione, descrizione, percorso dei tipi
-│   └── marketplace.json   # marketplace locale gorlix-multi-view, sorgente ./
+│   └── marketplace.json   # marketplace locale gorlix-multi-view
 ├── hooks/
 │   ├── hooks.json         # dichiara il modulo: ./register.tsx
-│   ├── register.tsx       # banda, pannello, comandi, toast, inbox, sessioni
-│   ├── ui.ts              # helper grafici puri: barre, glifi di stato, albero, colori, soglie
-│   ├── paca.ts            # chiamate all'MCP PACA, parser del testo, aggancio e polling
-│   └── list_sessions.py   # legge le sessioni salvate (titolo, task PACA) e stampa JSON
+│   ├── register.tsx       # banda, pannello, comandi, toast, inbox
+│   ├── ui.ts              # helper grafici puri: barre, glifi, albero, soglie
+│   ├── paca.ts            # MCP PACA: chiamate, parser, aggancio, polling
+│   ├── session_title.py   # titolo di una sessione (nome finestra tmux)
+│   └── list_sessions.py   # sessioni salvate (titolo, task PACA) in JSON
 ├── types/index.d.ts       # tipi condivisi e stato dichiarato del plugin
 ├── tests/
 │   ├── register.test.ts   # inbox, albero agenti, limiti, sessioni
-│   ├── paca.test.ts       # parser PACA, backlog, lock del polling, aggancio, task attivo
-│   └── test_list_sessions.py  # ref PACA dalle trascrizioni: `python3 -I tests/test_list_sessions.py`
+│   ├── paca.test.ts       # parser PACA, backlog, lock, aggancio
+│   └── test_list_sessions.py  # ref PACA dalle trascrizioni
 └── tsconfig.json          # estende .claude-plugin/types/tsconfig.json
 ```
 
@@ -167,8 +301,9 @@ Vincoli da conoscere, scoperti a proprie spese:
 - **PACA e il formato testuale.** L'MCP di PACA risponde con testo formattato, non JSON. I parser leggono i blocchi `Chiave: valore` e sono fragili: se PACA cambia formato, si rompono. I test coprono il formato attuale e sono il primo posto dove accorgersene.
 - **Task attivo.** Si aggiorna solo quando la chat chiama `update_task` su un server PACA o quando il polling rilegge i task. Uno spostamento fatto da fuori, a mano o da un'altra chat, compare nei toast ma non lo imposta come attivo.
 - **Più chat sullo stesso workspace.** Il lock del polling è best effort (scrittura e rilettura sullo store, non atomico): in una gara rara due sessioni possono fare un giro entrambe, con un toast doppio. Se la sessione che tiene il lock si chiude, i toast riprendono dopo circa 6 minuti.
+- **Titolo della finestra tmux.** Si aggiorna a fine turno, non a ogni `/rename`: dopo un rename serve il turno successivo o `/titolo-finestra`. Il riconoscimento di una finestra "nostra" si basa su `automatic-rename`: se l'hai spento per tutto tmux, la mod non rinomina niente finché non usi `/titolo-finestra`. Le chat verticali aperte con `-n` restano col loro slug.
 - **Copia hot-reload.** In una sessione che ha caricato anche una copia della mod in hot-reload (per esempio con `--plugin-dir` oltre all'installazione), la banda appare doppia.
 
 ## Idee aperte
 
-- Un pannello delle chat verticali, dentro la mod `chat-verticali` e non qui.
+- Il pannello delle chat verticali esiste già, ma vive nella mod `chat-verticali` e non qui (pannello "Verticali", vedi il README di quella mod).

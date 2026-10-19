@@ -1,5 +1,6 @@
 import type { AgentStatus } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import { ctxTone } from '../hooks/ui'
 
@@ -151,4 +152,45 @@ test('context fill shows in the band, yellow from 60 and red from 80', async ($,
 })
 test('ctxTone thresholds', () => {
   expect([59, 60, 79, 80].map(ctxTone)).toEqual(['green', 'yellow', 'yellow', 'red'])
+})
+
+// tmux window title: renamed only when the mod may name the window.
+const tmuxSetup = (on: Parameters<TestBody>[1], window: string, auto: string) => {
+  const runs: string[][] = []
+  on('env.get', ($, e) => {
+    const name = (e as { name: string }).name
+    return { value: name === 'TMUX_PANE' ? '%1' : name === 'HOME' ? '/home/u' : undefined }
+  })
+  on('session.cwd', () => ({ value: '/home/u/repo' }))
+  on('session.id', () => ({ value: 'abcdef1234' }))
+  on('process.run', ($, e) => {
+    const argv = [...e.argv]
+    runs.push(argv)
+    const out = argv[0] === 'python3' ? 'Mod UI multi-agent\n'
+      : argv[1] === 'display-message' ? `${window}\n`
+      : argv[1] === 'show-window-options' ? `${auto}\n` : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  return runs
+}
+
+test('an auto-named tmux window takes the chat title', async ($, on) => {
+  const runs = tmuxSetup(on, 'claude', '')
+  await $.command.run({ command: 'titolo-finestra', args: '' } as never)
+  expect(runs.find(r => r[1] === 'rename-window')).toEqual(['tmux', 'rename-window', '-t', '%1', 'Mod UI multi-agent'])
+})
+
+test('a window named on purpose keeps its name unless forced', async ($, on) => {
+  const runs = tmuxSetup(on, 'trim-42-fix', 'off')
+  on('turn.complete', () => ({ text: '' }) as never)
+  await $.turn.complete({ answer: { text: 'ok' } } as never)
+  expect(runs.find(r => r[1] === 'rename-window')).toBeUndefined()
+  await $.command.run({ command: 'titolo-finestra', args: '' } as never)
+  expect(runs.find(r => r[1] === 'rename-window')?.[4]).toBe('Mod UI multi-agent')
+})
+
+test('a resume window keeps its ·id8 suffix', async ($, on) => {
+  const runs = tmuxSetup(on, 'vecchio titolo·abcdef12', 'off')
+  await $.command.run({ command: 'titolo-finestra', args: '' } as never)
+  expect(runs.find(r => r[1] === 'rename-window')?.[4]).toBe('Mod UI multi-agent·abcdef12')
 })

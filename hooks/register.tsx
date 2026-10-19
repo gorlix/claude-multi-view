@@ -204,8 +204,48 @@ async function togglePaca($: EngineInterface) {
   }
 }
 
+// The tmux window shows the session's title instead of "claude". Only a
+// window this mod may name is renamed: one tmux still auto-renames, one the
+// mod opened for a resume (name ends with ·<id8>), or one it named before.
+// A window named on purpose (chat-verticali's slug) keeps its name.
+let tmuxNamed: string | undefined
+
+async function syncTmuxTitle($: EngineInterface, isForced = false) {
+  const pane = await $.env.get('TMUX_PANE')
+  if (!pane) return
+  const id = await $.session.id()
+  const script = `${$.plugin.root}/hooks/session_title.py`
+  const titled = await $.process.run(['python3', '-I', script, `${await projectDir($)}/${id}.jsonl`])
+  const title = titled.stdout.trim()
+  if (titled.exitCode !== 0 || !title) return
+  const tmux = (...args: string[]) => $.process.run(['tmux', ...args])
+  const current = (await tmux('display-message', '-p', '-t', pane, '#{window_name}')).stdout.trim()
+  const auto = (await tmux('show-window-options', '-t', pane, '-v', 'automatic-rename')).stdout.trim()
+  const suffix = `·${id.slice(0, 8)}`
+  const hasSuffix = current.endsWith(suffix)
+  const wanted = `${short(title, 30)}${hasSuffix ? suffix : ''}`
+  if (current === wanted) return
+  const isOurs = isForced || auto !== 'off' || hasSuffix || current === tmuxNamed
+  if (!isOurs) return
+  await tmux('rename-window', '-t', pane, wanted)
+  tmuxNamed = wanted
+}
+
 export const register: Register = on => {
+  on('turn.complete', ($, e, next) => {
+    void syncTmuxTitle($).catch(() => undefined)
+
+    return next(e)
+  })
+
+  on('command.run', { command: 'titolo-finestra' }, async $ => {
+    await syncTmuxTitle($, true)
+
+    return { text: (await $.env.get('TMUX_PANE')) ? 'Finestra tmux rinominata col titolo della chat.' : 'Non sei in tmux.' }
+  })
+
   on('session.start', async ($, e, next) => {
+    void syncTmuxTitle($).catch(() => undefined)
     const cwd = await $.session.cwd()
     await update($, chat, () => cwd.split('/').filter(Boolean).pop() ?? cwd)
     // Each command on its own: a name taken (a skill `paca` exists) must not
@@ -216,6 +256,7 @@ export const register: Register = on => {
     await command('sessioni', 'Mostra le sessioni salvate di questo workspace, da riprendere in tmux')
     await command('paca-tasks', 'Mostra i task aperti del progetto PACA di questo workspace')
     await command('paca-link', 'Collega il workspace a un progetto PACA: /paca-link <PREFISSO> [server MCP] | auto | off')
+    await command('titolo-finestra', 'Rinomina la finestra tmux con il titolo di questa chat')
     await command('inbox-clear', 'Svuota i messaggi arrivati da altre sessioni')
     $.clock.every(POLL_MS, () => void poll($))
     await update($, now, () => 0)
