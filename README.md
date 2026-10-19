@@ -89,7 +89,7 @@ Il comando non si chiama `/paca` perché esiste già una skill `paca` con quel n
 Da GitHub, al prompt di una sessione Claude Code nel terminale:
 
 ```
-/plugin install multi-view --marketplace gorlix/multi-view
+/plugin install multi-view --marketplace gorlix/claude-multi-view
 ```
 
 Poi `y` per aggiungere il marketplace e la scope (utente o progetto).
@@ -97,7 +97,7 @@ Poi `y` per aggiungere il marketplace e la scope (utente o progetto).
 Da una copia locale, per svilupparla (il repo è anche un marketplace: `.claude-plugin/marketplace.json`, nome `gorlix-multi-view`, sorgente `./`):
 
 ```
-claude plugin marketplace add ~/Documents/Git/multi-view
+claude plugin marketplace add ~/Documents/Git/claude-multi-view
 claude plugin install multi-view@gorlix-multi-view
 ```
 
@@ -106,7 +106,7 @@ In questo caso il plugin è letto dalla cartella: dopo ogni modifica al codice, 
 Per una prova una tantum, senza installare:
 
 ```
-claude --plugin-dir ~/Documents/Git/multi-view
+claude --plugin-dir ~/Documents/Git/claude-multi-view
 ```
 
 Requisiti:
@@ -121,7 +121,7 @@ Requisiti:
 Struttura:
 
 ```
-multi-view/
+claude-multi-view/
 ├── .claude-plugin/
 │   ├── plugin.json        # nome, versione, descrizione, percorso dei tipi
 │   └── marketplace.json   # marketplace locale gorlix-multi-view, sorgente ./
@@ -140,8 +140,8 @@ multi-view/
 Comandi:
 
 ```
-claude plugin validate ~/Documents/Git/multi-view
-claude plugin test ~/Documents/Git/multi-view
+claude plugin validate ~/Documents/Git/claude-multi-view
+claude plugin test ~/Documents/Git/claude-multi-view
 ```
 
 Il type-check si fa con `tsc -p .` (senza emettere file): il `tsconfig.json` estende `.claude-plugin/types/tsconfig.json`, che l'engine scrive (con i tipi dell'API) solo quando carica la cartella in sviluppo, con `claude --plugin-dir .` o in hot reload. La cartella `types/` generata non è versionata.
