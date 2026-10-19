@@ -1,0 +1,1 @@
+{ "name": "multi-view", "version": "0.1.1", "description": "Pannello agenti, banda di contesto, inbox tra sessioni e notifiche per il lavoro multi-chat e multi-agent", "types": "./types/index.d.ts" }

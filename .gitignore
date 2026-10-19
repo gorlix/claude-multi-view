@@ -1,0 +1,3 @@
+# Tipi generati dall'engine di Claude Code quando carica la cartella in sviluppo
+.claude-plugin/types/
+node_modules/

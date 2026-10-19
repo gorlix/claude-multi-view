@@ -1,0 +1,5 @@
+{
+  "name": "gorlix-multi-view",
+  "owner": { "name": "gorlix" },
+  "plugins": [{ "name": "multi-view", "source": "./" }]
+}
