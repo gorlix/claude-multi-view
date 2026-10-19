@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, EngineInterface, Register, SessionRateLimit } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register, RenderChildren, SessionRateLimit } from 'claude-code'
 
 import type { AgentRow, InboxItem, Limit, PacaTask, SavedSession } from '../types'
 import {
@@ -10,6 +10,7 @@ import {
   refreshTasks,
   resolveProject,
 } from './paca'
+import { SEP, bar, categoryTone, glyphFor, limitTone, tree } from './ui'
 
 // Multi-view: one pane with the session's agents (press one to view its
 // transcript), a band above the prompt saying which chat this is and how many
@@ -59,29 +60,10 @@ const sameRows = (a: AgentRow[], b: AgentRow[]) =>
   a.length === b.length &&
   a.every((r, i) => r.id === b[i]?.id && r.status === b[i]?.status && r.label === b[i]?.label)
 
-// Parents first, children indented under them.
-const tree = (rows: AgentRow[]): { row: AgentRow; depth: number }[] => {
-  const ids = new Set(rows.map(r => r.id))
-  const out: { row: AgentRow; depth: number }[] = []
-  const walk = (parent: string | undefined, depth: number) => {
-    for (const row of rows) {
-      const isRoot = parent === undefined && (!row.parentId || !ids.has(row.parentId))
-      if (isRoot || (parent !== undefined && row.parentId === parent)) {
-        out.push({ row, depth })
-        walk(row.id, depth + 1)
-      }
-    }
-  }
-  walk(undefined, 0)
-  return out
-}
-
 const counts = (rows: AgentRow[]) => ({
   run: rows.filter(r => ACTIVE.has(r.status)).length,
   idle: rows.filter(r => r.status === 'idle').length,
 })
-
-const limitColor = (pct: number) => (pct >= 90 ? 'red' : pct >= 80 ? 'yellow' : undefined)
 
 // "2h10m", "3g4h": time left until the window resets.
 const until = (resetsAt: string | undefined, at: number) => {
@@ -326,32 +308,54 @@ export const register: Register = on => {
     const at = await read($, now)
     const active = await read($, pacaActive)
 
+    const dim = <Text dimColor>{SEP}</Text>
+
     return (
       <Box>
-        {lims.map(l => (
-          <Text key={`lim-${l.kind}`} color={limitColor(l.percentUsed)} dimColor={!limitColor(l.percentUsed)}>
-            {LIMIT_NAMES[l.kind]} {l.percentUsed}%{until(l.resetsAt, at) && ` (${until(l.resetsAt, at)})`}
-            {' · '}
-          </Text>
-        ))}
+        {lims.map(l => {
+          const b = bar(l.percentUsed, 8)
+          const tone = limitTone(l.percentUsed)
+          const left = until(l.resetsAt, at)
+          return (
+            <Box key={`lim-${l.kind}`}>
+              <Text dimColor>{LIMIT_NAMES[l.kind]} </Text>
+              <Text color={tone}>{b.on}</Text>
+              <Text dimColor>{b.off}</Text>
+              <Text color={tone}> {l.percentUsed}%</Text>
+              {left && <Text dimColor> {left}</Text>}
+              {dim}
+            </Box>
+          )
+        })}
         <Text dimColor>chat: {await read($, chat)}</Text>
         {active && (
-          <Text color="blue">
-            {' · '}
-            {active.ref} {active.status}: {short(active.title, 40)}
-          </Text>
+          <Box>
+            {dim}
+            <Text inverse color="blue">
+              {' '}
+              {active.ref}{' '}
+            </Text>
+            <Text color="blue"> {active.status}: {short(active.title, 40)}</Text>
+          </Box>
         )}
         {rows.length > 0 && (
-          <Text dimColor>
-            {' · '}
-            {rows.length} agenti ({run} attivi, {idle} idle)
-          </Text>
+          <Box>
+            {dim}
+            <Text color="green">● {run}</Text>
+            <Text color="yellow"> ◐ {idle}</Text>
+            <Text dimColor> / {rows.length}</Text>
+          </Box>
         )}
-        {msgs.length > 0 && <Text color="yellow"> · {msgs.length} msg</Text>}
-        <Text> </Text>
+        {msgs.length > 0 && (
+          <Box>
+            {dim}
+            <Text color="yellow">✉ {msgs.length}</Text>
+          </Box>
+        )}
+        {dim}
         <Button key="sessions" label="Sessioni" onPress={() => void toggleSessions($)} />
         {viewed && (
-          <Text color="cyan"> · vista: {short(viewedRow?.label ?? viewed, 30)} </Text>
+          <Text color="cyan"> │ vista: {short(viewedRow?.label ?? viewed, 30)} </Text>
         )}
         {viewed && (
           <Button key="back" label="Torna" onPress={() => void $.ui.view({})} />
@@ -365,111 +369,177 @@ export const register: Register = on => {
     const rows = await read($, agents)
     const msgs = await read($, inbox)
     const viewed = e.props.view?.agentId
-    const width = Math.max(20, (e.viewport?.columns ?? 40) - 14)
+    const width = Math.max(16, (e.viewport?.columns ?? 40) - 18)
+    const barCells = Math.max(8, Math.min(24, (e.viewport?.columns ?? 40) - 26))
     const lims = await read($, limits)
     const at = await read($, now)
     const project = await read($, pacaProject)
     const openTasks = (await read($, pacaTasks)).filter(isShownTask)
+    const sessionsOpen = await read($, showSessions)
+    const pacaOpen = await read($, showPaca)
+    // A rounded section with its title as the first line.
+    const section = (title: string, tone: string | undefined, body: RenderChildren) => (
+      <Box key={`sec-${title}`} flexDirection="column" borderStyle="round" borderColor={tone ?? 'gray'} paddingX={1}>
+        <Text bold color={tone}>
+          {title}
+        </Text>
+        {body}
+      </Box>
+    )
 
     return (
       <Box flexDirection="column">
-        {lims.map(l => (
-          <Text key={`lim-${l.kind}`} color={limitColor(l.percentUsed)}>
-            Limite {LIMIT_NAMES[l.kind]}: {l.percentUsed}%
-            {until(l.resetsAt, at) && `, reset tra ${until(l.resetsAt, at)}`}
-          </Text>
-        ))}
-        <Button
-          key="main"
-          label={viewed ? 'Conversazione principale' : '> Conversazione principale'}
-          onPress={() => void $.ui.view({})}
-        />
-        {rows.length === 0 && <Text dimColor>Nessun agente in questa sessione.</Text>}
-        {tree(rows).map(({ row, depth }) => (
-          <Box key={row.id}>
-            <Text>{'  '.repeat(depth)}</Text>
-            <Button
-              key={`view-${row.id}`}
-              label={`${row.id === viewed ? '> ' : ''}${short(row.label, width)}`}
-              onPress={() => void $.ui.view({ agentId: row.id })}
-            />
-            <Text dimColor={!ACTIVE.has(row.status)} color={row.status === 'failed' ? 'red' : undefined}>
-              {' '}
-              {row.status} · {row.type}
-            </Text>
-          </Box>
-        ))}
-        <Text> </Text>
-        <Button
-          key="sessions-toggle"
-          label={`${(await read($, showSessions)) ? 'v' : '>'} Sessioni del workspace`}
-          onPress={() => void toggleSessions($)}
-        />
-        {(await read($, showSessions)) &&
-          (await read($, sessions)).slice(0, SESSIONS_SHOWN).map(row =>
-            row.isCurrent ? (
-              <Text key={`s-${row.id}`} dimColor>
-                {'  '}= {short(row.title, width)} (questa)
-              </Text>
-            ) : (
-              <Box key={`s-${row.id}`}>
-                <Text>{'  '}</Text>
-                <Button
-                  key={`resume-${row.id}`}
-                  label={short(row.title, width)}
-                  onPress={() => void resumeSession($, row)}
-                />
-                <Text dimColor> {ago(row.mtime, at)}</Text>
-              </Box>
-            ),
+        {lims.length > 0 &&
+          section(
+            'Limiti',
+            undefined,
+            lims.map(l => {
+              const b = bar(l.percentUsed, barCells)
+              const tone = limitTone(l.percentUsed)
+              const left = until(l.resetsAt, at)
+              return (
+                <Box key={`lim-${l.kind}`} flexDirection="column">
+                  <Box>
+                    <Text bold>{LIMIT_NAMES[l.kind]?.padEnd(5)}</Text>
+                    <Text color={tone}>{b.on}</Text>
+                    <Text dimColor>{b.off}</Text>
+                    <Text color={tone}> {l.percentUsed}%</Text>
+                  </Box>
+                  {left && <Text dimColor>{'     '}reset tra {left}</Text>}
+                </Box>
+              )
+            }),
           )}
-        {project && <Text> </Text>}
-        {project && (
-          <Button
-            key="paca-toggle"
-            label={`${(await read($, showPaca)) ? 'v' : '>'} PACA ${project.name} (${openTasks.length} aperti)`}
-            onPress={() => void togglePaca($)}
-          />
+        {section(
+          'Agenti',
+          'green',
+          <Box flexDirection="column">
+            <Button
+              key="main"
+              label={viewed ? 'Conversazione principale' : '▸ Conversazione principale'}
+              onPress={() => void $.ui.view({})}
+            />
+            {rows.length === 0 && <Text dimColor>Nessun agente in questa sessione.</Text>}
+            {tree(rows).map(({ row, prefix }) => {
+              const g = glyphFor(row.status)
+              return (
+                <Box key={row.id}>
+                  <Text dimColor>{prefix}</Text>
+                  <Text color={g.color} dimColor={g.dim}>
+                    {g.glyph}{' '}
+                  </Text>
+                  <Button
+                    key={`view-${row.id}`}
+                    label={`${row.id === viewed ? '▸ ' : ''}${short(row.label, width - prefix.length)}`}
+                    onPress={() => void $.ui.view({ agentId: row.id })}
+                  />
+                  <Text dimColor={!ACTIVE.has(row.status) && row.status !== 'failed'} color={row.status === 'failed' ? 'red' : undefined}>
+                    {' '}
+                    {row.status} · {row.type}
+                  </Text>
+                </Box>
+              )
+            })}
+          </Box>,
+        )}
+        {section(
+          'Sessioni',
+          'cyan',
+          <Box flexDirection="column">
+            <Button
+              key="sessions-toggle"
+              label={`${sessionsOpen ? '▾' : '▸'} Sessioni del workspace`}
+              onPress={() => void toggleSessions($)}
+            />
+            {sessionsOpen &&
+              (await read($, sessions)).slice(0, SESSIONS_SHOWN).map(row =>
+                row.isCurrent ? (
+                  <Text key={`s-${row.id}`} dimColor>
+                    {'  '}● {short(row.title, width)} (questa)
+                  </Text>
+                ) : (
+                  <Box key={`s-${row.id}`}>
+                    <Text dimColor>{'  ○ '}</Text>
+                    <Button
+                      key={`resume-${row.id}`}
+                      label={short(row.title, width - 2)}
+                      onPress={() => void resumeSession($, row)}
+                    />
+                    <Text dimColor> {ago(row.mtime, at)}</Text>
+                  </Box>
+                ),
+              )}
+          </Box>,
         )}
         {project &&
-          (await read($, showPaca)) &&
-          openTasks.slice(0, PACA_SHOWN).map(task => (
-            <Box key={`t-${task.id}`} flexDirection="column">
-              <Text color={task.category === 'inprogress' ? 'blue' : undefined}>
-                {'  '}
-                {task.ref} {task.status}: {short(task.title, width)}
-              </Text>
-              <Box>
-                <Text>{'    '}</Text>
-                <Button
-                  key={`do-${task.id}`}
-                  label="Lavora qui"
-                  onPress={() => void $.prompt.fill({ text: `/paca-do ${task.ref}` })}
-                />
-                <Text> </Text>
-                <Button
-                  key={`chat-${task.id}`}
-                  label="Nuova chat"
-                  onPress={() => void $.prompt.fill({ text: `/handoff ${task.ref} ${task.title}` })}
-                />
-                <Text> </Text>
-                <Button
-                  key={`ref-${task.id}`}
-                  label="Copia ref"
-                  onPress={() => void $.ui.copy({ text: task.ref })}
-                />
-              </Box>
-            </Box>
-          ))}
-        {msgs.length > 0 && <Text bold>{'\n'}Messaggi ({msgs.length})</Text>}
-        {msgs.slice(-5).map(m => (
-          <Text key={String(m.at)} wrap="truncate-end">
-            <Text color="yellow">{short(m.from, 20)}:</Text> {m.text.replace(/\s+/g, ' ')}
-          </Text>
-        ))}
-        {msgs.length > 0 && (
-          <Button key="clear" label="Svuota inbox" onPress={() => void update($, inbox, () => [])} />
-        )}
+          section(
+            'PACA',
+            'blue',
+            <Box flexDirection="column">
+              <Button
+                key="paca-toggle"
+                label={`${pacaOpen ? '▾' : '▸'} ${project.name} (${openTasks.length} aperti)`}
+                onPress={() => void togglePaca($)}
+              />
+              {pacaOpen &&
+                openTasks.slice(0, PACA_SHOWN).map(task => {
+                  const tone = categoryTone(task.category)
+                  return (
+                    <Box key={`t-${task.id}`} flexDirection="column">
+                      <Box>
+                        <Text inverse color={tone}>
+                          {' '}
+                          {task.ref}{' '}
+                        </Text>
+                        <Text color={tone}>
+                          {' '}
+                          {task.status}
+                        </Text>
+                      </Box>
+                      <Text>
+                        {'  '}
+                        {short(task.title, width)}
+                      </Text>
+                      <Box>
+                        <Text dimColor>{'  └ '}</Text>
+                        <Button
+                          key={`do-${task.id}`}
+                          label="Lavora qui"
+                          onPress={() => void $.prompt.fill({ text: `/paca-do ${task.ref}` })}
+                        />
+                        <Text dimColor>{' │ '}</Text>
+                        <Button
+                          key={`chat-${task.id}`}
+                          label="Nuova chat"
+                          onPress={() => void $.prompt.fill({ text: `/handoff ${task.ref} ${task.title}` })}
+                        />
+                        <Text dimColor>{' │ '}</Text>
+                        <Button
+                          key={`ref-${task.id}`}
+                          label="Copia ref"
+                          onPress={() => void $.ui.copy({ text: task.ref })}
+                        />
+                      </Box>
+                    </Box>
+                  )
+                })}
+            </Box>,
+          )}
+        {msgs.length > 0 &&
+          section(
+            `✉ Messaggi (${msgs.length})`,
+            'yellow',
+            <Box flexDirection="column">
+              {msgs.slice(-5).map(m => (
+                <Text key={String(m.at)} wrap="truncate-end">
+                  <Text color="yellow">{short(m.from, 20)}</Text>
+                  <Text dimColor> › </Text>
+                  {m.text.replace(/\s+/g, ' ')}
+                </Text>
+              ))}
+              <Button key="clear" label="Svuota inbox" onPress={() => void update($, inbox, () => [])} />
+            </Box>,
+          )}
       </Box>
     )
   })

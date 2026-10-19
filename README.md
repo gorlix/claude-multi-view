@@ -1,6 +1,6 @@
 # multi-view
 
-Una mod di Claude Code (plugin con hooks module TypeScript) che dà una vista comoda per lavorare con più chat e più agenti insieme. Versione 0.1.1.
+Una mod di Claude Code (plugin con hooks module TypeScript) che dà una vista comoda per lavorare con più chat e più agenti insieme. Versione 0.2.0.
 
 Pensata per il terminale, in particolare dentro tmux: una banda sopra il prompt con i dati che servono a colpo d'occhio, un pannello "Agenti" con l'albero degli agenti, le sessioni salvate del workspace e i task PACA, e dei toast quando succede qualcosa mentre guardi altrove.
 
@@ -8,13 +8,13 @@ Pensata per il terminale, in particolare dentro tmux: una banda sopra il prompt 
 
 ### Banda sopra il prompt
 
-Una riga sopra il prompt, da sinistra a destra:
+Una riga sopra il prompt, con i segmenti separati da `│` attenuato, da sinistra a destra:
 
-- **Limiti di utilizzo**: 5h e settimanale (`sett`), con percentuale usata e tempo al reset, per esempio `5h 42% (2h10m)` oppure `sett 71% (3g4h)`. Il testo diventa giallo da 80% e rosso da 90%, altrimenti è attenuato. Il tempo al reset si aggiorna una volta al minuto.
+- **Limiti di utilizzo**: 5h e settimanale (`sett`) come mini barra a 8 celle (`5h ▰▰▰▰▱▱▱▱ 42% 2h10m`), con percentuale usata e tempo al reset. Barra e percentuale sono verdi, gialle da 80% e rosse da 90%. Il tempo al reset si aggiorna una volta al minuto.
 - **Nome della chat**: l'ultima cartella del percorso di lavoro (`chat: homelab`).
-- **Task PACA attivo**, in blu: `HOME-12 In Progress: titolo`. Vedi la sezione PACA.
-- **Conteggio agenti**: `N agenti (X attivi, Y idle)`, solo se ce n'è almeno uno.
-- **Messaggi in arrivo**: `N msg` in giallo, se l'inbox non è vuota.
+- **Task PACA attivo**: il riferimento come etichetta a colori invertiti, poi stato e titolo in blu (` HOME-12 ` `In Progress: titolo`). Vedi la sezione PACA.
+- **Conteggio agenti**: `● 2 ◐ 1 / 3`, cioè attivi in verde, idle in giallo, totale attenuato; solo se c'è almeno un agente.
+- **Messaggi in arrivo**: `✉ N` in giallo, se l'inbox non è vuota.
 - Pulsante **Sessioni**: apre il pannello con l'elenco delle sessioni salvate.
 - **Vista agente**: quando stai guardando la trascrizione di un agente compare `vista: <nome>` e il pulsante **Torna**, che riporta alla conversazione principale.
 
@@ -24,12 +24,13 @@ La banda non compare se Claude Code sta mostrando il questionario di feedback.
 
 Si apre da solo all'avvio della sessione (vedi i limiti) e con `/agenti`. Dall'alto:
 
-1. I limiti 5h e settimanale, in forma estesa (`Limite 5h: 42%, reset tra 2h10m`).
-2. Il pulsante **Conversazione principale** (con `>` quando è la vista corrente).
-3. L'**albero degli agenti**: i genitori prima, i figli indentati sotto. Ogni riga è un pulsante: un click apre la trascrizione di quell'agente nella vista principale. A destra stato e tipo; gli agenti falliti sono in rosso.
-4. La sezione **Sessioni del workspace**, richiudibile (vedi sotto).
-5. La sezione **PACA**, visibile solo se il workspace è agganciato a un progetto.
-6. Gli ultimi 5 messaggi dell'**inbox**, con mittente e testo su una riga, e il pulsante **Svuota inbox**.
+Il pannello è fatto di sezioni con bordo arrotondato e titolo colorato, solo quelle che hanno contenuto:
+
+1. **Limiti**: 5h e settimanale con una barra più larga della banda (si adatta alla larghezza del pannello, da 8 a 24 celle), la percentuale e sotto il tempo al reset (`reset tra 2h10m`). Stessi colori della banda.
+2. **Agenti**: il pulsante **Conversazione principale** (con `▸` quando è la vista corrente) e l'**albero degli agenti**, con i figli sotto al genitore tramite i connettori `├─` e `└─`. Ogni riga ha un glifo di stato e un pulsante: un click apre la trascrizione di quell'agente nella vista principale. A destra stato e tipo. Glifi: `●` verde per running e ciano per pending e waiting, `◐` giallo per idle, `✓` attenuato per completed, `✗` rosso per failed, `■` attenuato per killed.
+3. **Sessioni**: la sezione richiudibile con le sessioni del workspace (vedi sotto).
+4. **PACA**: visibile solo se il workspace è agganciato a un progetto.
+5. **Messaggi**: gli ultimi 5 messaggi dell'inbox, con mittente e testo su una riga, e il pulsante **Svuota inbox**.
 
 ### Notifiche (toast)
 
@@ -43,7 +44,7 @@ Si apre da solo all'avvio della sessione (vedi i limiti) e con `/agenti`. Dall'a
 
 Claude Code salva ogni sessione in `~/.claude/projects/<cwd>/<sessionId>.jsonl`, dove `<cwd>` è il percorso di lavoro con ogni carattere non alfanumerico sostituito da `-`. La mod lo ricostruisce e lo legge con `hooks/list_sessions.py`, lanciato con `python3 -I`.
 
-Il titolo di ogni sessione viene da, in ordine: l'ultimo `custom-title` (quello di `/rename`), l'ultimo `ai-title`, l'ultimo `last-prompt`, altrimenti `(senza titolo)`; si usa solo la prima riga. L'elenco è ordinato dalla più recente e il pannello ne mostra 12, con quanto tempo fa sono state modificate (`5m fa`, `3h fa`, `2g fa`). La sessione corrente appare come `= titolo (questa)` e non è cliccabile.
+Il titolo di ogni sessione viene da, in ordine: l'ultimo `custom-title` (quello di `/rename`), l'ultimo `ai-title`, l'ultimo `last-prompt`, altrimenti `(senza titolo)`; si usa solo la prima riga. L'elenco è ordinato dalla più recente e il pannello ne mostra 12, con quanto tempo fa sono state modificate (`5m fa`, `3h fa`, `2g fa`). Le sessioni sono precedute da `○`, con l'età attenuata a fianco. La sessione corrente appare come `● titolo (questa)` e non è cliccabile.
 
 Click su una sessione: dentro tmux apre una nuova finestra (`tmux new-window`, nella stessa cartella, col titolo come nome) che lancia `claude --resume <id>`. Fuori da tmux copia il comando negli appunti e lo segnala con un toast. Una mod non può cambiare la sessione del processo in cui gira, per questo si passa da una nuova finestra.
 
@@ -60,7 +61,7 @@ I server MCP si provano in ordine: quello indicato in `/paca-link`, poi `paca-<c
 
 **Polling.** I task si rileggono ogni 3 minuti e ogni volta che si apre la sezione PACA. Si leggono fino a 5 pagine da 200 task.
 
-**Cosa si mostra.** Solo le categorie di stato `inprogress`, `refinement` e `todo`, in quest'ordine; `backlog` e `done` no (vengono comunque ricordati per accorgersi di un task che esce dalla lista). Il pulsante della sezione dice `PACA <progetto> (N aperti)`; aperta, mostra i primi 10 task con riferimento, stato e titolo (in blu quelli in corso). L'emoji che PACA mette davanti ai nomi degli stati viene tolta.
+**Cosa si mostra.** Solo le categorie di stato `inprogress`, `refinement` e `todo`, in quest'ordine; `backlog` e `done` no (vengono comunque ricordati per accorgersi di un task che esce dalla lista). Il pulsante della sezione dice `PACA <progetto> (N aperti)`; aperta, mostra i primi 10 task: il riferimento come etichetta colorata per categoria (blu `inprogress`, magenta `refinement`, giallo `todo`) seguito dallo stato, e sotto il titolo. L'emoji che PACA mette davanti ai nomi degli stati viene tolta.
 
 Per ogni task ci sono tre pulsanti:
 
@@ -128,6 +129,7 @@ claude-multi-view/
 ├── hooks/
 │   ├── hooks.json         # dichiara il modulo: ./register.tsx
 │   ├── register.tsx       # banda, pannello, comandi, toast, inbox, sessioni
+│   ├── ui.ts              # helper grafici puri: barre, glifi di stato, albero, colori
 │   ├── paca.ts            # chiamate all'MCP PACA, parser del testo, aggancio e polling
 │   └── list_sessions.py   # legge le sessioni salvate di una cartella e stampa JSON
 ├── types/index.d.ts       # tipi condivisi e stato dichiarato del plugin

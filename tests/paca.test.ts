@@ -104,7 +104,9 @@ test('the repo origin finds the project; update_task to In Progress fills the ba
   const ran = await $.command.run({ command: 'paca-tasks', args: '' } as never)
   expect(ran.text).toBe('Task PACA di Acme nel pannello Agenti.')
   const ui = await $.ui.mount(pane)
-  expect(await ui.findAll({ type: 'Text', text: /ACME-4 Todo: Debito tecnico/ })).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Text', text: /Debito tecnico/ })).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Text', text: /Todo/ })).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Text', text: /ACME-4/ })).toHaveLength(1)
   expect(await ui.findAll({ type: 'Text', text: /ACME-7/ })).toHaveLength(0)
 
   status4 = 's-prog'
@@ -112,7 +114,9 @@ test('the repo origin finds the project; update_task to In Progress fills the ba
   expect(toasts).toContain('ACME-4: Todo → In Progress')
   expect((store.get('paca-active:sess') as { ref: string }).ref).toBe('ACME-4')
   const band = await $.ui.mount({ plugin: 'multi-view', surface: 'terminal', component: 'AbovePrompt', props: {} } as never)
-  expect(await band.findAll({ type: 'Text', text: /ACME-4 In Progress: Debito tecnico/ })).toHaveLength(1)
+  expect(await band.findAll({ type: 'Text', text: /ACME-4/ })).toHaveLength(1)
+  expect(await band.findAll({ type: 'Text', text: /In Progress/ })).toHaveLength(1)
+  expect(await band.findAll({ type: 'Text', text: /Debito tecnico/ })).toHaveLength(1)
 })
 
 test('a server pinned to another project is skipped for the per-repo one', async ($, on) => {
