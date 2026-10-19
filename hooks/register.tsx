@@ -7,10 +7,11 @@ import {
   isShownTask,
   linkProject,
   noteUpdate,
+  pollTasks,
   refreshTasks,
   resolveProject,
 } from './paca'
-import { SEP, bar, categoryTone, glyphFor, limitTone, tree } from './ui'
+import { SEP, bar, categoryTone, ctxTone, glyphFor, limitTone, tree } from './ui'
 
 // Multi-view: one pane with the session's agents (press one to view its
 // transcript), a band above the prompt saying which chat this is and how many
@@ -41,6 +42,8 @@ const SESSIONS_SHOWN = 12
 const pacaProject = atom({ plugin: 'multi-view', key: 'pacaProject' } as const, null)
 const pacaTasks = atom({ plugin: 'multi-view', key: 'pacaTasks' } as const, [])
 const pacaActive = atom({ plugin: 'multi-view', key: 'pacaActive' } as const, null)
+const pacaBacklog = atom({ plugin: 'multi-view', key: 'pacaBacklog' } as const, 0)
+const ctx = atom({ plugin: 'multi-view', key: 'ctx' } as const, null)
 const showPaca = atom({ plugin: 'multi-view', key: 'showPaca' } as const, false)
 const PACA_POLL_MS = 180_000
 const PACA_SHOWN = 10
@@ -120,6 +123,9 @@ async function setLimits($: EngineInterface, raw: readonly SessionRateLimit[]) {
   await update($, limits, () => list)
 }
 
+const setCtx = ($: EngineInterface, percent: number | undefined) =>
+  update($, ctx, () => (percent === undefined ? null : Math.round(percent)))
+
 // The project folder Claude Code keeps this workspace's transcripts in.
 async function projectDir($: EngineInterface) {
   const home = (await $.env.get('HOME')) ?? ''
@@ -129,7 +135,15 @@ async function projectDir($: EngineInterface) {
 
 async function loadSessions($: EngineInterface) {
   const script = `${$.plugin.root}/hooks/list_sessions.py`
-  const run = await $.process.run(['python3', '-I', script, await projectDir($), await $.session.id()])
+  const prefix = (await read($, pacaProject))?.prefix
+  const run = await $.process.run([
+    'python3',
+    '-I',
+    script,
+    await projectDir($),
+    await $.session.id(),
+    ...(prefix ? ['--prefix', prefix] : []),
+  ])
   if (run.exitCode !== 0) {
     $.ui.toast('Sessioni non leggibili: vedi /agenti')
     return
@@ -156,8 +170,19 @@ async function resumeSession($: EngineInterface, row: SavedSession) {
     $.ui.toast(`Fuori da tmux: copiato "${command}"`)
     return
   }
+  // The window name ends in the first 8 chars of the id: that is how an
+  // already running resume is found again.
+  const tag = `·${row.id.slice(0, 8)}`
+  const windows = await $.process.run(['tmux', 'list-windows', '-a', '-F', '#{window_id} #{window_name}'])
+  const open = windows.exitCode === 0 ? windows.stdout.split('\n').find(l => l.trimEnd().endsWith(tag)) : undefined
+  const windowId = open?.split(' ')[0]
+  if (windowId) {
+    await $.process.run(['tmux', 'select-window', '-t', windowId])
+    $.ui.toast('Già aperta: salto alla finestra')
+    return
+  }
   const cwd = await $.session.cwd()
-  const run = await $.process.run(['tmux', 'new-window', '-c', cwd, '-n', short(row.title, 24), 'claude', '--resume', row.id])
+  const run = await $.process.run(['tmux', 'new-window', '-c', cwd, '-n', `${short(row.title, 24)}${tag}`, 'claude', '--resume', row.id])
   $.ui.toast(run.exitCode === 0 ? `Ripresa in tmux: ${short(row.title, 40)}` : `tmux: ${run.stderr.trim()}`)
 }
 
@@ -167,14 +192,14 @@ async function startPaca($: EngineInterface) {
   if (!project) return
   const saved = await $.store.get(activeKey(await $.session.id()))
   if (saved && typeof saved === 'object') await update($, pacaActive, () => saved as PacaTask)
-  await refreshTasks($)
+  await pollTasks($, PACA_POLL_MS)
 }
 
 async function togglePaca($: EngineInterface) {
   const isShown = !(await read($, showPaca))
   await update($, showPaca, () => isShown)
   if (isShown) {
-    await refreshTasks($).catch(() => $.ui.toast('PACA non raggiungibile'))
+    await refreshTasks($, false).catch(() => $.ui.toast('PACA non raggiungibile'))
     await $.ui.open({ id: PANE, title: 'Agenti' })
   }
 }
@@ -197,14 +222,23 @@ export const register: Register = on => {
     void $.clock.now().then(at => update($, now, () => at))
     $.clock.every(60_000, () => void $.clock.now().then(at => update($, now, () => at)))
     void startPaca($).catch(() => undefined)
-    $.clock.every(PACA_POLL_MS, () => void refreshTasks($).catch(() => undefined))
-    void $.session.usage().then(u => setLimits($, u.rateLimits)).catch(() => undefined)
+    $.clock.every(PACA_POLL_MS, () => void pollTasks($, PACA_POLL_MS).catch(() => undefined))
+    void $.session
+      .usage()
+      .then(async u => {
+        await setCtx($, u.context.percent)
+        await setLimits($, u.rateLimits)
+      })
+      .catch(() => undefined)
     void $.ui.open({ id: PANE, title: 'Agenti' })
 
     return next(e)
   })
 
   on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('context')) {
+      await setCtx($, e.context.percent).catch(() => undefined)
+    }
     if (e.changed.includes('rateLimits')) {
       await setLimits($, e.rateLimits).catch(() => undefined)
     }
@@ -265,7 +299,7 @@ export const register: Register = on => {
     const ran = await next(e)
     const input = e as { taskId?: string; statusId?: string }
     if (!ran.isError && input.taskId && input.statusId) {
-      await noteUpdate($, input.taskId).catch(() => undefined)
+      await noteUpdate($, input.taskId, PACA_POLL_MS).catch(() => undefined)
     }
 
     return ran
@@ -307,6 +341,7 @@ export const register: Register = on => {
     const lims = await read($, limits)
     const at = await read($, now)
     const active = await read($, pacaActive)
+    const ctxPct = await read($, ctx)
 
     const dim = <Text dimColor>{SEP}</Text>
 
@@ -327,6 +362,15 @@ export const register: Register = on => {
             </Box>
           )
         })}
+        {ctxPct !== null && (
+          <Box>
+            <Text dimColor>ctx </Text>
+            <Text color={ctxTone(ctxPct)}>{bar(ctxPct, 8).on}</Text>
+            <Text dimColor>{bar(ctxPct, 8).off}</Text>
+            <Text color={ctxTone(ctxPct)}> {ctxPct}%</Text>
+            {dim}
+          </Box>
+        )}
         <Text dimColor>chat: {await read($, chat)}</Text>
         {active && (
           <Box>
@@ -374,9 +418,11 @@ export const register: Register = on => {
     const lims = await read($, limits)
     const at = await read($, now)
     const project = await read($, pacaProject)
+    const backlog = await read($, pacaBacklog)
     const openTasks = (await read($, pacaTasks)).filter(isShownTask)
     const sessionsOpen = await read($, showSessions)
     const pacaOpen = await read($, showPaca)
+    const active = await read($, pacaActive)
     // A rounded section with its title as the first line.
     const section = (title: string, tone: string | undefined, body: RenderChildren) => (
       <Box key={`sec-${title}`} flexDirection="column" borderStyle="round" borderColor={tone ?? 'gray'} paddingX={1}>
@@ -460,9 +506,16 @@ export const register: Register = on => {
                 ) : (
                   <Box key={`s-${row.id}`}>
                     <Text dimColor>{'  ○ '}</Text>
+                    {row.pacaRef && (
+                      <Text inverse color={row.pacaRef === active?.ref ? 'blue' : undefined}>
+                        {' '}
+                        {row.pacaRef}{' '}
+                      </Text>
+                    )}
+                    {row.pacaRef && <Text> </Text>}
                     <Button
                       key={`resume-${row.id}`}
-                      label={short(row.title, width - 2)}
+                      label={short(row.title, width - 2 - (row.pacaRef ? row.pacaRef.length + 3 : 0))}
                       onPress={() => void resumeSession($, row)}
                     />
                     <Text dimColor> {ago(row.mtime, at)}</Text>
@@ -478,7 +531,7 @@ export const register: Register = on => {
             <Box flexDirection="column">
               <Button
                 key="paca-toggle"
-                label={`${pacaOpen ? '▾' : '▸'} ${project.name} (${openTasks.length} aperti)`}
+                label={`${pacaOpen ? '▾' : '▸'} ${project.name} (${openTasks.length} aperti · ${backlog} backlog)`}
                 onPress={() => void togglePaca($)}
               />
               {pacaOpen &&

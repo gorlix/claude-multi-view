@@ -1,6 +1,8 @@
 import type { AgentStatus } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
+import { ctxTone } from '../hooks/ui'
+
 const SURFACES = ['terminal', 'desktop'] as const
 const pane = (surface: (typeof SURFACES)[number]) =>
   ({ plugin: 'multi-view', surface, component: 'Pane', requestId: 'agenti', props: {} }) as never
@@ -100,9 +102,10 @@ test('5h and weekly limits lead the pane and warn past 80% once', async ($, on) 
 
 test('saved sessions list and resume in a new tmux window', async ($, on) => {
   const runs: string[][] = []
+  let windows = ''
   const saved = [
     { id: 'cur', title: 'Questa chat', mtime: 1, isCurrent: true },
-    { id: 'old', title: 'MCP Proxmox e cluster', mtime: 1, isCurrent: false },
+    { id: 'old', title: 'MCP Proxmox e cluster', mtime: 1, isCurrent: false, pacaRef: 'ACME-3' },
   ]
   on('env.get', ($, e) => ({ value: (e as { name: string }).name === 'TMUX' ? '/tmp/tmux' : '/home/u' }))
   on('session.cwd', () => ({ value: '/home/u/repo' }))
@@ -113,7 +116,7 @@ test('saved sessions list and resume in a new tmux window', async ($, on) => {
   on('process.run', ($, e) => {
     const argv = [...(e as { argv: string[] }).argv]
     runs.push(argv)
-    const stdout = argv[0] === 'python3' ? JSON.stringify(saved) : ''
+    const stdout = argv[0] === 'python3' ? JSON.stringify(saved) : argv[1] === 'list-windows' ? windows : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await $.command.run({ command: 'sessioni', args: '' } as never)
@@ -121,5 +124,31 @@ test('saved sessions list and resume in a new tmux window', async ($, on) => {
   const ui = await $.ui.mount(pane('terminal'))
   expect(await ui.findAll({ type: 'Text', text: /Questa chat \(questa\)/ })).toHaveLength(1)
   await ui.press({ key: 'resume-old' })
-  expect(runs[1]).toEqual(['tmux', 'new-window', '-c', '/home/u/repo', '-n', 'MCP Proxmox e cluster', 'claude', '--resume', 'old'])
+  expect(await ui.findAll({ type: 'Text', text: /ACME-3/ })).toHaveLength(1)
+  await ui.press({ key: 'resume-old' })
+  expect(runs.at(-1)).toEqual(['tmux', 'new-window', '-c', '/home/u/repo', '-n', 'MCP Proxmox e cluster·old', 'claude', '--resume', 'old'])
+
+  // A window already named for that session is selected, not duplicated.
+  windows = '@1 bash\n@7 altro·old\n'
+  const before = runs.length
+  await ui.press({ key: 'resume-old' })
+  expect(runs.slice(before).map(r => r[1])).toEqual(['list-windows', 'select-window'])
+  expect(runs.at(-1)).toEqual(['tmux', 'select-window', '-t', '@7'])
+})
+
+test('context fill shows in the band, yellow from 60 and red from 80', async ($, on) => {
+  on('ui.toast', () => ({ value: undefined }))
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  const measure = (percent: number) =>
+    $.session.measure({ context: { window: 200000, percent }, rateLimits: [], changed: ['context'] } as never)
+  const band = () => $.ui.mount({ plugin: 'multi-view', surface: 'terminal', component: 'AbovePrompt', props: {} } as never)
+  await measure(34)
+  const ui = await band()
+  expect(await ui.findAll({ type: 'Text', text: /34%/ })).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Text', text: /34%/, color: 'green' } as never)).toHaveLength(1)
+  await measure(85)
+  expect(await ui.findAll({ type: 'Text', text: /85%/, color: 'red' } as never)).toHaveLength(1)
+})
+test('ctxTone thresholds', () => {
+  expect([59, 60, 79, 80].map(ctxTone)).toEqual(['green', 'yellow', 'yellow', 'red'])
 })

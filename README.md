@@ -1,6 +1,6 @@
 # multi-view
 
-Una mod di Claude Code (plugin con hooks module TypeScript) che dà una vista comoda per lavorare con più chat e più agenti insieme. Versione 0.2.0.
+Una mod di Claude Code (plugin con hooks module TypeScript) che dà una vista comoda per lavorare con più chat e più agenti insieme. Versione 0.3.0.
 
 Pensata per il terminale, in particolare dentro tmux: una banda sopra il prompt con i dati che servono a colpo d'occhio, un pannello "Agenti" con l'albero degli agenti, le sessioni salvate del workspace e i task PACA, e dei toast quando succede qualcosa mentre guardi altrove.
 
@@ -11,6 +11,7 @@ Pensata per il terminale, in particolare dentro tmux: una banda sopra il prompt 
 Una riga sopra il prompt, con i segmenti separati da `│` attenuato, da sinistra a destra:
 
 - **Limiti di utilizzo**: 5h e settimanale (`sett`) come mini barra a 8 celle (`5h ▰▰▰▰▱▱▱▱ 42% 2h10m`), con percentuale usata e tempo al reset. Barra e percentuale sono verdi, gialle da 80% e rosse da 90%. Il tempo al reset si aggiorna una volta al minuto.
+- **Contesto**: `ctx ▰▰▱▱▱▱▱▱ 34%`, la percentuale di finestra di contesto usata dalla chat. Verde sotto il 60%, giallo da 60%, rosso da 80% (60% è la soglia oltre cui conviene passare a una nuova chat). Non compare finché la sessione non ha ricevuto una risposta.
 - **Nome della chat**: l'ultima cartella del percorso di lavoro (`chat: homelab`).
 - **Task PACA attivo**: il riferimento come etichetta a colori invertiti, poi stato e titolo in blu (` HOME-12 ` `In Progress: titolo`). Vedi la sezione PACA.
 - **Conteggio agenti**: `● 2 ◐ 1 / 3`, cioè attivi in verde, idle in giallo, totale attenuato; solo se c'è almeno un agente.
@@ -44,9 +45,9 @@ Il pannello è fatto di sezioni con bordo arrotondato e titolo colorato, solo qu
 
 Claude Code salva ogni sessione in `~/.claude/projects/<cwd>/<sessionId>.jsonl`, dove `<cwd>` è il percorso di lavoro con ogni carattere non alfanumerico sostituito da `-`. La mod lo ricostruisce e lo legge con `hooks/list_sessions.py`, lanciato con `python3 -I`.
 
-Il titolo di ogni sessione viene da, in ordine: l'ultimo `custom-title` (quello di `/rename`), l'ultimo `ai-title`, l'ultimo `last-prompt`, altrimenti `(senza titolo)`; si usa solo la prima riga. L'elenco è ordinato dalla più recente e il pannello ne mostra 12, con quanto tempo fa sono state modificate (`5m fa`, `3h fa`, `2g fa`). Le sessioni sono precedute da `○`, con l'età attenuata a fianco. La sessione corrente appare come `● titolo (questa)` e non è cliccabile.
+Il titolo di ogni sessione viene da, in ordine: l'ultimo `custom-title` (quello di `/rename`), l'ultimo `ai-title`, l'ultimo `last-prompt`, altrimenti `(senza titolo)`; si usa solo la prima riga. L'elenco è ordinato dalla più recente e il pannello ne mostra 12, con quanto tempo fa sono state modificate (`5m fa`, `3h fa`, `2g fa`). Le sessioni sono precedute da `○`, con l'età attenuata a fianco. Se il workspace è agganciato a un progetto PACA, accanto al titolo c'è il task su cui la sessione ha lavorato, come etichetta a colori invertiti (blu se è il task attivo di questa chat): `list_sessions.py` riceve `--prefix <PREFISSO>` e prende l'ultimo riferimento di quel prefisso trovato nei prompt dell'utente e negli input dei tool PACA, Bash e Skill (non nei risultati dei tool, che elencano molti task), così `ADR-010` o `UTF-8` non contano. La sessione corrente appare come `● titolo (questa)` e non è cliccabile.
 
-Click su una sessione: dentro tmux apre una nuova finestra (`tmux new-window`, nella stessa cartella, col titolo come nome) che lancia `claude --resume <id>`. Fuori da tmux copia il comando negli appunti e lo segnala con un toast. Una mod non può cambiare la sessione del processo in cui gira, per questo si passa da una nuova finestra.
+Click su una sessione: dentro tmux apre una nuova finestra (`tmux new-window`, nella stessa cartella, col titolo come nome) che lancia `claude --resume <id>`. Il nome della finestra finisce con `·` e i primi 8 caratteri dell'id: prima di aprirne una nuova la mod cerca quel suffisso con `tmux list-windows`, e se la sessione è già aperta salta a quella finestra (`Già aperta: salto alla finestra`) invece di duplicarla. Fuori da tmux copia il comando negli appunti e lo segnala con un toast. Una mod non può cambiare la sessione del processo in cui gira, per questo si passa da una nuova finestra.
 
 ### Integrazione PACA
 
@@ -59,9 +60,9 @@ La mod parla con l'MCP di PACA **direttamente**, chiamando i tool dall'interno s
 
 I server MCP si provano in ordine: quello indicato in `/paca-link`, poi `paca-<cartella del workspace>` (per esempio `paca-homelab`), poi `paca`. Il motivo di questa ricerca per server: un server MCP lanciato con `PACA_PROJECT_ID` vede solo quel progetto, quindi il server globale `paca` potrebbe non vedere affatto il progetto del repo, mentre quello dedicato sì.
 
-**Polling.** I task si rileggono ogni 3 minuti e ogni volta che si apre la sezione PACA. Si leggono fino a 5 pagine da 200 task.
+**Polling.** I task si rileggono ogni 3 minuti e ogni volta che si apre la sezione PACA. Con più chat sullo stesso workspace fa polling (e toast) una sola: la sessione che tiene il lock `paca-poller:<projectId>` nello store del plugin, un file JSON condiviso tra le sessioni. Il lock si rinnova a ogni giro e un'altra sessione lo prende se è più vecchio di due intervalli; le altre rileggono i task solo quando si apre la sezione, senza toast. Si leggono fino a 5 pagine da 200 task.
 
-**Cosa si mostra.** Solo le categorie di stato `inprogress`, `refinement` e `todo`, in quest'ordine; `backlog` e `done` no (vengono comunque ricordati per accorgersi di un task che esce dalla lista). Il pulsante della sezione dice `PACA <progetto> (N aperti)`; aperta, mostra i primi 10 task: il riferimento come etichetta colorata per categoria (blu `inprogress`, magenta `refinement`, giallo `todo`) seguito dallo stato, e sotto il titolo. L'emoji che PACA mette davanti ai nomi degli stati viene tolta.
+**Cosa si mostra.** Solo le categorie di stato `inprogress`, `refinement` e `todo`, in quest'ordine; `backlog` e `done` no (vengono comunque ricordati per accorgersi di un task che esce dalla lista). Il pulsante della sezione dice `<progetto> (N aperti · M backlog)`, dove M conta i task in categoria `backlog` escludendo le epic (il tipo Epic si riconosce con `list_task_types`); aperta, mostra i primi 10 task: il riferimento come etichetta colorata per categoria (blu `inprogress`, magenta `refinement`, giallo `todo`) seguito dallo stato, e sotto il titolo. L'emoji che PACA mette davanti ai nomi degli stati viene tolta.
 
 Per ogni task ci sono tre pulsanti:
 
@@ -129,13 +130,14 @@ claude-multi-view/
 ├── hooks/
 │   ├── hooks.json         # dichiara il modulo: ./register.tsx
 │   ├── register.tsx       # banda, pannello, comandi, toast, inbox, sessioni
-│   ├── ui.ts              # helper grafici puri: barre, glifi di stato, albero, colori
+│   ├── ui.ts              # helper grafici puri: barre, glifi di stato, albero, colori, soglie
 │   ├── paca.ts            # chiamate all'MCP PACA, parser del testo, aggancio e polling
-│   └── list_sessions.py   # legge le sessioni salvate di una cartella e stampa JSON
+│   └── list_sessions.py   # legge le sessioni salvate (titolo, task PACA) e stampa JSON
 ├── types/index.d.ts       # tipi condivisi e stato dichiarato del plugin
 ├── tests/
 │   ├── register.test.ts   # inbox, albero agenti, limiti, sessioni
-│   └── paca.test.ts       # parser PACA, aggancio, task attivo, server dedicato
+│   ├── paca.test.ts       # parser PACA, backlog, lock del polling, aggancio, task attivo
+│   └── test_list_sessions.py  # ref PACA dalle trascrizioni: `python3 -I tests/test_list_sessions.py`
 └── tsconfig.json          # estende .claude-plugin/types/tsconfig.json
 ```
 
@@ -144,6 +146,7 @@ Comandi:
 ```
 claude plugin validate ~/Documents/Git/claude-multi-view
 claude plugin test ~/Documents/Git/claude-multi-view
+python3 -I tests/test_list_sessions.py
 ```
 
 Il type-check si fa con `tsc -p .` (senza emettere file): il `tsconfig.json` estende `.claude-plugin/types/tsconfig.json`, che l'engine scrive (con i tipi dell'API) solo quando carica la cartella in sviluppo, con `claude --plugin-dir .` o in hot reload. La cartella `types/` generata non è versionata.
@@ -160,15 +163,12 @@ Vincoli da conoscere, scoperti a proprie spese:
 - **Agenti.** Si rileggono ogni 2 secondi; quelli lanciati dai workflow non compaiono.
 - **Apertura automatica del pannello.** All'avvio la mod chiede di aprire il pannello, ma è l'engine a decidere se c'è posto: secondo la documentazione delle mod un pannello aperto senza un'azione dell'utente si apre solo da 144 colonne in su. Sotto, si apre con `/agenti` o col pulsante Sessioni.
 - **Mittente dei messaggi.** Per i messaggi tra sessioni il mittente è quello che l'engine espone (nome del teammate o del plugin); molto spesso non c'è e compare "altra sessione".
-- **Sessioni.** Nessun controllo se una sessione da riprendere è già aperta in un'altra finestra: si può aprire due volte la stessa. Il pannello ne mostra solo 12.
+- **Sessioni.** Il controllo "già aperta" riconosce solo le finestre aperte dalla mod (nome col suffisso dell'id): una `claude --resume` lanciata a mano in un'altra finestra non si vede, e se la finestra viene rinominata si può riaprire. Il riferimento PACA è quello trovato nella trascrizione, non una verità: se la chat ha citato un altro task per ultimo, vince quello. Il pannello ne mostra solo 12.
 - **PACA e il formato testuale.** L'MCP di PACA risponde con testo formattato, non JSON. I parser leggono i blocchi `Chiave: valore` e sono fragili: se PACA cambia formato, si rompono. I test coprono il formato attuale e sono il primo posto dove accorgersene.
 - **Task attivo.** Si aggiorna solo quando la chat chiama `update_task` su un server PACA o quando il polling rilegge i task. Uno spostamento fatto da fuori, a mano o da un'altra chat, compare nei toast ma non lo imposta come attivo.
-- **Più chat sullo stesso workspace.** Ognuna fa il suo polling PACA, quindi i toast di cambio stato arrivano doppi.
+- **Più chat sullo stesso workspace.** Il lock del polling è best effort (scrittura e rilettura sullo store, non atomico): in una gara rara due sessioni possono fare un giro entrambe, con un toast doppio. Se la sessione che tiene il lock si chiude, i toast riprendono dopo circa 6 minuti.
 - **Copia hot-reload.** In una sessione che ha caricato anche una copia della mod in hot-reload (per esempio con `--plugin-dir` oltre all'installazione), la banda appare doppia.
 
 ## Idee aperte
 
-- Collegare le sessioni salvate ai task PACA, ricavando il riferimento dalla trascrizione.
 - Un pannello delle chat verticali, dentro la mod `chat-verticali` e non qui.
-- La percentuale di contesto usato nella banda.
-- Il conteggio dei task in backlog di PACA.

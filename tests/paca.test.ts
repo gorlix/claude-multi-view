@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { nextCursor, parseProjects, parseRepos, parseStatuses, parseTasks, repoOf } from '../hooks/paca'
+import { countBacklog, nextCursor, parseEpicTypeId, parseProjects, parseRepos, parseStatuses, parseTasks, repoOf } from '../hooks/paca'
 
 // Samples shaped as the PACA MCP server answers (2026-10-19).
 const PROJECTS = `Projects:
@@ -69,6 +69,72 @@ test('parsers read the PACA text format', () => {
   expect(repoOf('https://github.com/gorlix/homelab\n')).toBe('gorlix/homelab')
 })
 
+const TYPES = `Task Types:
+
+Task Type: Bug
+ID: ty-bug
+Default: false
+
+---
+
+Task Type: Epic
+ID: ty-epic
+Default: false`
+
+test('backlog count leaves epics out', () => {
+  expect(parseEpicTypeId(TYPES)).toBe('ty-epic')
+  expect(parseEpicTypeId('nothing useful')).toBeUndefined()
+  const statuses = new Map([['s-b', { name: 'Backlog', category: 'backlog' }]])
+  const text = ['1', '2', '3']
+    .map((n, i) => `Task #${n}: t${n}\nID: id${n}\nStatus: s-b\nType: ${i === 0 ? 'ty-epic' : 'ty-bug'}\nUpdated: x`)
+    .join('\n\n---\n\n')
+  const list = parseTasks(text, 'ACME', statuses)
+  expect(countBacklog(list, 'ty-epic')).toBe(2)
+  expect(countBacklog(list, undefined)).toBe(3)
+})
+
+test('only the session holding the poller lock polls; the label counts backlog', async ($, on) => {
+  const store = new Map<string, unknown>()
+  let now = 1000
+  let polls = 0
+  on('store.get', ($, e) => ({ value: store.get((e as { key: string }).key) }))
+  on('store.set', ($, e) => {
+    const { key, value } = e as { key: string; value: unknown }
+    store.set(key, value)
+    return { value: undefined }
+  })
+  on('store.delete', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: now }))
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'me' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('process.run', () => ({
+    value: { exitCode: 0, stdout: 'git@github.com:example/acme-infra.git\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('mcp.call', ($, e) => {
+    const { tool } = e as { tool: string }
+    if (tool === 'list_tasks') polls++
+    const text = tool === 'list_projects' ? PROJECTS
+      : tool === 'github_list_linked_repos' ? REPOS
+      : tool === 'list_task_statuses' ? STATUSES.replace('Category: done', 'Category: backlog')
+      : tool === 'list_task_types' ? TYPES
+      : tasks('s-todo')
+    return { value: { content: [{ type: 'text', text }], isError: false } }
+  })
+  // Another session holds a fresh lock: this one starts without polling.
+  store.set('paca-poller:p1', { sessionId: 'other', at: 900 })
+  await $.command.run({ command: 'paca-tasks', args: '' } as never)
+  expect(polls).toBe(1) // only the refresh from opening the section
+  expect((store.get('paca-poller:p1') as { sessionId: string }).sessionId).toBe('other')
+  const ui = await $.ui.mount(pane)
+  expect(await ui.findAll({ type: 'Button', text: /1 aperti · 1 backlog/ } as never)).toHaveLength(1)
+  // The lock goes stale (older than 2 x 180 s): this session takes it over.
+  now = 900 + 400_000
+  await $.command.run({ command: 'paca-link', args: 'auto' } as never)
+  expect((store.get('paca-poller:p1') as { sessionId: string }).sessionId).toBe('me')
+})
+
 const pane = { plugin: 'multi-view', surface: 'terminal', component: 'Pane', requestId: 'agenti', props: {} } as never
 
 test('the repo origin finds the project; update_task to In Progress fills the band', async ($, on) => {
@@ -81,6 +147,7 @@ test('the repo origin finds the project; update_task to In Progress fills the ba
     store.set(key, value)
     return { value: undefined }
   })
+  on('clock.now', () => ({ value: 1000 }))
   on('session.cwd', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'sess' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))

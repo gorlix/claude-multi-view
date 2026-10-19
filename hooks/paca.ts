@@ -16,6 +16,7 @@ const SHOWN_CATEGORIES = ['inprogress', 'refinement', 'todo']
 const pacaProject = atom({ plugin: 'multi-view', key: 'pacaProject' } as const, null)
 const pacaTasks = atom({ plugin: 'multi-view', key: 'pacaTasks' } as const, [])
 const pacaActive = atom({ plugin: 'multi-view', key: 'pacaActive' } as const, null)
+const pacaBacklog = atom({ plugin: 'multi-view', key: 'pacaBacklog' } as const, 0)
 
 type Status = { name: string; category: string }
 
@@ -46,6 +47,18 @@ export function parseStatuses(text: string): Map<string, Status> {
   return map
 }
 
+// Id of the Epic type from list_task_types ("Task Type: Epic" / "ID: ...").
+export function parseEpicTypeId(text: string): string | undefined {
+  for (const b of blocks(text)) {
+    if (/^epic$/i.test(plain(field(b, 'Task Type')))) return field(b, 'ID') || undefined
+  }
+  return undefined
+}
+
+// Backlog tasks that are not epics (epics are permanent containers).
+export const countBacklog = (all: PacaTask[], epicTypeId: string | undefined) =>
+  all.filter(t => t.category === 'backlog' && !(epicTypeId && t.typeId === epicTypeId)).length
+
 export function parseTasks(text: string, prefix: string, statuses: Map<string, Status>): PacaTask[] {
   const out: PacaTask[] = []
   for (const b of blocks(text)) {
@@ -59,6 +72,7 @@ export function parseTasks(text: string, prefix: string, statuses: Map<string, S
       ref: `${prefix}-${head[1]}`,
       title: plain(head[2] ?? ''),
       statusId,
+      typeId: field(b, 'Type'),
       status: status?.name ?? '?',
       category: status?.category ?? '',
       updated: field(b, 'Updated'),
@@ -130,8 +144,31 @@ export async function linkProject($: EngineInterface, prefix: string, server?: s
   await $.store.set(linkKey(await $.session.cwd()), link)
 }
 
-// Reads the open tasks and toasts each status change since the last read.
-export async function refreshTasks($: EngineInterface) {
+const lockKey = (projectId: string) => `paca-poller:${projectId}`
+
+// The store is the plugin's JSON file under the Claude Code config dir, so
+// every session of this plugin reads the same keys: one session holds the
+// polling lock per project and renews it; another takes over once it is older
+// than twice the interval. Best effort (read-back after write), not atomic.
+export async function ownsPolling($: EngineInterface, projectId: string, intervalMs: number) {
+  const me = await $.session.id()
+  const at = await $.clock.now()
+  const held = (await $.store.get(lockKey(projectId))) as { sessionId?: string; at?: number } | undefined
+  if (held?.sessionId && held.sessionId !== me && at - (held.at ?? 0) <= 2 * intervalMs) return false
+  await $.store.set(lockKey(projectId), { sessionId: me, at })
+  const back = (await $.store.get(lockKey(projectId))) as { sessionId?: string } | undefined
+  return back?.sessionId === me
+}
+
+// Timer entry: only the lock holder polls (and so toasts).
+export async function pollTasks($: EngineInterface, intervalMs: number) {
+  const project = await read($, pacaProject)
+  if (project && (await ownsPolling($, project.id, intervalMs))) await refreshTasks($)
+}
+
+// Reads the open tasks and toasts each status change since the last read
+// (`notify` false: refresh the panel only, for a session without the lock).
+export async function refreshTasks($: EngineInterface, notify = true) {
   const project = await read($, pacaProject)
   if (!project) return
   const statuses = parseStatuses(await pacaText($, project.server, 'list_task_statuses', { projectId: project.id }))
@@ -143,10 +180,13 @@ export async function refreshTasks($: EngineInterface) {
     cursor = nextCursor(text)
     if (!cursor) break
   }
+  const types = await pacaText($, project.server, 'list_task_types', { projectId: project.id }).catch(() => '')
+  await update($, pacaBacklog, () => countBacklog(all, parseEpicTypeId(types)))
   const before = new Map((await read($, pacaTasks)).map(t => [t.id, t]))
   const active = await read($, pacaActive)
   for (const task of all) {
     const old = before.get(task.id)
+    if (!notify) continue
     if (old && old.statusId !== task.statusId) {
       $.ui.toast(`${task.ref}: ${old.status} → ${task.status}`)
     } else if (old && active?.id === task.id && old.updated !== task.updated) {
@@ -167,8 +207,9 @@ export async function refreshTasks($: EngineInterface) {
 export const activeKey = (sessionId: string) => `paca-active:${sessionId}`
 
 // After update_task moved a task to an in-progress status, it is this chat's.
-export async function noteUpdate($: EngineInterface, taskId: string) {
-  await refreshTasks($)
+export async function noteUpdate($: EngineInterface, taskId: string, intervalMs: number) {
+  const project = await read($, pacaProject)
+  await refreshTasks($, !!project && (await ownsPolling($, project.id, intervalMs)))
   const task = (await read($, pacaTasks)).find(t => t.id === taskId)
   if (task?.category === 'inprogress') {
     await update($, pacaActive, () => task)

@@ -51,3 +51,6 @@ export const tree = (rows: AgentRow[]): { row: AgentRow; prefix: string }[] => {
 // PACA status category to pill color.
 export const categoryTone = (category: string) =>
   category === 'inprogress' ? 'blue' : category === 'refinement' ? 'magenta' : category === 'todo' ? 'yellow' : undefined
+
+// Context fill of the chat: green until 60%, yellow from 60, red from 80.
+export const ctxTone = (pct: number) => (pct >= 80 ? 'red' : pct >= 60 ? 'yellow' : 'green')

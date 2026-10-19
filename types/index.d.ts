@@ -8,7 +8,7 @@ export type AgentRow = {
 
 export type Limit = { kind: string; percentUsed: number; resetsAt?: string }
 
-export type SavedSession = { id: string; title: string; mtime: number; isCurrent: boolean }
+export type SavedSession = { id: string; title: string; mtime: number; isCurrent: boolean; pacaRef?: string | null }
 
 export type PacaProject = { id: string; name: string; prefix: string; server: string }
 
@@ -17,6 +17,7 @@ export type PacaTask = {
   ref: string
   title: string
   statusId: string
+  typeId: string
   status: string
   category: string
   updated: string
@@ -37,6 +38,8 @@ declare module 'claude-code' {
       pacaProject: PacaProject | null
       pacaTasks: PacaTask[]
       pacaActive: PacaTask | null
+      pacaBacklog: number
+      ctx: number | null
       showPaca: boolean
     }
   }
