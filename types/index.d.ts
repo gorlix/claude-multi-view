@@ -23,7 +23,27 @@ export type PacaTask = {
   updated: string
 }
 
-export type Tab = 'all' | 'limits' | 'agents' | 'sessions' | 'paca' | 'inbox'
+export type GitInfo = {
+  branch: string
+  worktree?: string
+  modified: number
+  staged: number
+  untracked: number
+  ahead: number
+  behind: number
+}
+
+export type TmuxWindow = { id: string; name: string }
+
+export type Vertical = {
+  id: string
+  slug: string
+  title: string
+  status: 'active' | 'paused' | 'done'
+  contextPercent: number | null
+}
+
+export type Tab = 'all' | 'limits' | 'agents' | 'sessions' | 'verticals' | 'paca' | 'inbox'
 
 export type TabStyle = 'both' | 'icon' | 'name'
 
@@ -36,11 +56,15 @@ export type Prefs = {
   bandPaca: boolean
   bandAgents: boolean
   bandInbox: boolean
+  bandGit: boolean
+  bandTurn: boolean
   paneLimits: boolean
   paneAgents: boolean
   panePaca: boolean
   paneSessions: boolean
   paneInbox: boolean
+  paneVerticals: boolean
+  notifyDesktop: boolean
   openPaneAtStart: boolean
 }
 
@@ -67,6 +91,13 @@ declare module 'claude-code' {
       showMenu: boolean
       showPaneMenu: boolean
       openMsg: number | null
+      gitInfo: GitInfo | null
+      turnStart: number | null
+      turnLast: number | null
+      tick: number
+      tmuxWindows: TmuxWindow[]
+      killPending: string | null
+      verticals: Vertical[]
     }
   }
 }

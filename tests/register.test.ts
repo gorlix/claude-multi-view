@@ -1,8 +1,9 @@
 import type { AgentStatus } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { ctxTone } from '../hooks/ui'
+import { parseStatus, worktreeName } from '../hooks/git'
+import { ctxTone, fmtDuration, parseWindows, windowOfSession, windowOfVertical } from '../hooks/ui'
 
 const SURFACES = ['terminal', 'desktop'] as const
 const pane = (surface: (typeof SURFACES)[number]) =>
@@ -224,7 +225,7 @@ test('saved sessions list and resume in a new tmux window', async ($, on) => {
   await ui.press({ key: 'resume-old' })
   expect(await ui.findAll({ type: 'Text', text: /ACME-3/ })).toHaveLength(1)
   await ui.press({ key: 'resume-old' })
-  expect(runs.at(-1)).toEqual(['tmux', 'new-window', '-c', '/home/u/repo', '-n', 'MCP Proxmox e cluster·old', 'claude', '--resume', 'old'])
+  expect(runs.find(r => r[1] === 'new-window')).toEqual(['tmux', 'new-window', '-c', '/home/u/repo', '-n', 'MCP Proxmox e cluster·old', 'claude', '--resume', 'old'])
 
   // A window already named for that session is selected, not duplicated.
   windows = '@1 bash\n@7 altro·old\n'
@@ -430,4 +431,268 @@ test('/multiview opens the band menu and says where pane settings are', async ($
   expect(ran.text).toMatch(/⚙/)
   const band = await $.ui.mount(BAND)
   expect(await band.findAll({ type: 'Button', text: 'chiudi' })).toHaveLength(1)
+})
+
+const result = (stdout = '', exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+
+test('parseStatus counts staged, modified, untracked and ahead/behind', () => {
+  const out = [
+    '# branch.oid abcdef1234567890',
+    '# branch.head feat/git-band',
+    '# branch.upstream origin/feat/git-band',
+    '# branch.ab +2 -1',
+    '1 .M N... 100644 100644 100644 aaa bbb hooks/a.ts',
+    '1 M. N... 100644 100644 100644 aaa bbb hooks/b.ts',
+    '1 MM N... 100644 100644 100644 aaa bbb hooks/c.ts',
+    '2 R. N... 100644 100644 100644 aaa bbb R100 new.ts\told.ts',
+    'u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.ts',
+    '? notes.md',
+    '? tmp/',
+  ].join('\n')
+  expect(parseStatus(out)).toEqual({ branch: 'feat/git-band', modified: 3, staged: 4, untracked: 2, ahead: 2, behind: 1 })
+  expect(parseStatus('# branch.oid abcdef1234567890\n# branch.head (detached)\n').branch).toBe('@abcdef1')
+  expect(parseStatus('')).toEqual({ branch: '', modified: 0, staged: 0, untracked: 0, ahead: 0, behind: 0 })
+})
+
+test('worktreeName is set only for a linked worktree', () => {
+  expect(worktreeName('/r/.git\n/r/.git\n/r\n')).toBeUndefined()
+  expect(worktreeName('/r/.git/worktrees/fix-x\n/r/.git\n/w/fix-x\n')).toBe('fix-x')
+  expect(worktreeName('')).toBeUndefined()
+})
+
+test('fmtDuration, tmux window parsing and lookups', () => {
+  expect([0, 45_000, 83_000, 600_000, 3_720_000].map(fmtDuration)).toEqual(['0s', '45s', '1m23s', '10m00s', '1h02m'])
+  const windows = parseWindows('@1 bash\n@7 altro·abcdef12\n@9 mio-slug\n')
+  expect(windows).toEqual([
+    { id: '@1', name: 'bash' },
+    { id: '@7', name: 'altro·abcdef12' },
+    { id: '@9', name: 'mio-slug' },
+  ])
+  expect(windowOfSession(windows, 'abcdef1234')?.id).toBe('@7')
+  expect(windowOfVertical(windows, { id: 'zzzzzzzz1', slug: 'mio-slug' })?.id).toBe('@9')
+  expect(windowOfVertical(windows, { id: 'abcdef12xx', slug: 'altro-slug' })?.id).toBe('@7')
+  expect(windowOfVertical(windows, { id: 'nope', slug: 'nope' })).toBeUndefined()
+})
+
+// The props of every Text matching, to check colors (findAll's own filter ignores them).
+const propsOf = async (ui: { findAll: (q: never) => Promise<{ props?: unknown }[]> }, text: string | RegExp) =>
+  (await ui.findAll({ type: 'Text', text } as never)).map(n => n.props)
+
+const done = { answer: 'ok', durationMs: 45_000, isAborted: false, turnId: 't1', reason: 'answer' } as never
+
+test('the band shows git branch, counts and the linked worktree', async ($, on) => {
+  let isRepo = true
+  on('turn.complete', () => ({ text: '' }) as never)
+  on('process.run', ($, e) => {
+    const argv = [...e.argv]
+    if (argv[0] !== 'git' || !isRepo) return result('', 128)
+    if (argv[2] === 'rev-parse') return result('/r/.git/worktrees/fix-x\n/r/.git\n/w/fix-x\n')
+    return result('# branch.head feat/x\n# branch.ab +3 -0\n1 .M N... a b c d e f.ts\n1 A. N... a b c d e g.ts\n? h.ts\n')
+  })
+  on('store.set', () => ({ value: undefined }))
+  const clock = mock.clock(on)
+  await $.turn.complete(done)
+  await clock.settle()
+  const band = await $.ui.mount(BAND)
+  expect(await band.findAll({ type: 'Text', text: '⎇ fix-x ' })).toHaveLength(1)
+  expect(await propsOf(band, 'feat/x')).toEqual([{ color: 'cyan' }])
+  expect(await propsOf(band, ' ●1')).toEqual([{ color: 'yellow' }])
+  expect(await propsOf(band, ' ↑3')).toEqual([{ dimColor: true }])
+  expect(await band.findAll({ type: 'Text', text: ' +1' })).toHaveLength(1)
+  expect(await band.findAll({ type: 'Text', text: ' ?1' })).toHaveLength(1)
+  expect(await band.findAll({ type: 'Text', text: ' ↑3' })).toHaveLength(1)
+  // Zero counts leave no text.
+  expect(await band.findAll({ type: 'Text', text: /↓/ })).toHaveLength(0)
+  await band.press({ key: 'menu' })
+  expect(await band.findAll({ type: 'Button', text: '☑ git' })).toHaveLength(1)
+  await band.press({ key: 'pref-bandGit' })
+  expect(await band.findAll({ type: 'Text', text: 'feat/x' })).toHaveLength(0)
+  await band.press({ key: 'pref-bandGit' })
+  // Not a repo: no segment.
+  isRepo = false
+  await $.turn.complete(done)
+  await clock.settle()
+  expect(await band.findAll({ type: 'Text', text: 'feat/x' })).toHaveLength(0)
+})
+
+test('turn timer runs while a turn does and keeps the last duration after', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }) as never)
+  on('process.run', () => result('', 128))
+  on('store.set', () => ({ value: undefined }))
+  const band = await $.ui.mount(BAND)
+  expect(await band.findAll({ type: 'Text', text: /⏱/ })).toHaveLength(0)
+  await $.turn.start({ text: 'ciao', turnId: 't1' })
+  expect(await propsOf(band, '⏱ 0s')).toEqual([{ color: 'cyan' }])
+  // A subagent's turn does not restart the timer.
+  clock.set(1_010_000)
+  await $.turn.start({ text: '', turnId: 't2', agentId: 'a1' })
+  await $.turn.complete({ ...(done as object), agentId: 'a1', durationMs: 3000 } as never)
+  expect(await band.findAll({ type: 'Text', text: /⏱ 3s/ })).toHaveLength(0)
+  await $.turn.complete(done)
+  expect(await propsOf(band, '⏱ 45s')).toEqual([{ dimColor: true }])
+  await band.press({ key: 'menu' })
+  expect(await band.findAll({ type: 'Button', text: '☑ turno' })).toHaveLength(1)
+  await band.press({ key: 'pref-bandTurn' })
+  expect(await band.findAll({ type: 'Text', text: /⏱/ })).toHaveLength(0)
+})
+
+// Runs notify-send/tmux are mocked: nothing real is sent.
+const agentNow = { status: 'running' as AgentStatus }
+const notifySetup = (on: Parameters<TestBody>[1], env: Record<string, string>, active = () => '11') => {
+  const runs: string[][] = []
+  on('env.get', ($, e) => ({ value: env[(e as { name: string }).name] }))
+  on('agent.list', () => ({ value: [{ id: 'a1', description: 'audit file', type: 'Explore', status: agentNow.status }] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('process.run', ($, e) => {
+    const argv = [...e.argv]
+    runs.push(argv)
+    return result(argv[1] === 'display-message' ? `${active()}\n` : '')
+  })
+  return runs
+}
+
+const finishAgent = async ($: Parameters<TestBody>[0]) => {
+  agentNow.status = 'running'
+  await $.command.run({ command: 'agenti', args: '' } as never)
+  agentNow.status = 'completed'
+  await $.command.run({ command: 'agenti', args: '' } as never)
+}
+
+test('a finished agent sends a desktop notification outside tmux', async ($, on) => {
+  const runs = notifySetup(on, {})
+  await finishAgent($)
+  expect(runs.filter(r => r[0] === 'notify-send')).toEqual([['notify-send', '-a', 'Claude multi-view', 'Agente completed', 'audit file']])
+})
+
+test('in tmux the notification is skipped only when this window is the one in view', async ($, on) => {
+  let active = '11'
+  const runs = notifySetup(on, { TMUX_PANE: '%3' }, () => active)
+  await finishAgent($)
+  expect(runs.some(r => r[1] === 'display-message' && r.includes('%3'))).toBe(true)
+  expect(runs.filter(r => r[0] === 'notify-send')).toHaveLength(0)
+  active = '01'
+  await finishAgent($)
+  expect(runs.filter(r => r[0] === 'notify-send')).toHaveLength(1)
+})
+
+test('limit thresholds and inbox messages notify, and the pane switch turns it off', async ($, on) => {
+  const runs = notifySetup(on, {})
+  on('store.set', () => ({ value: undefined }))
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  on('session.receive', ($, e) => ({ text: e.text }))
+  on('clock.now', () => ({ value: 1 }))
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 85 }], changed: ['rateLimits'] } as never)
+  await $.session.receive({ origin: { kind: 'peer', teammate: 'verticale-a' }, text: 'Finito. Resta il README' } as never)
+  expect(runs.filter(r => r[0] === 'notify-send').map(r => r.slice(3))).toEqual([
+    ['Limite 5h', 'al 85%'],
+    ['Messaggio da verticale-a', 'Finito'],
+  ])
+  const ui = await $.ui.mount(pane('terminal'))
+  await ui.press({ key: 'pane-menu' })
+  expect(await ui.findAll({ type: 'Button', text: '☑ notifiche desktop' })).toHaveLength(1)
+  await ui.press({ key: 'pref-notifyDesktop' })
+  await $.session.receive({ origin: { kind: 'peer', teammate: 'altro' }, text: 'x' } as never)
+  expect(runs.filter(r => r[0] === 'notify-send')).toHaveLength(2)
+})
+
+test('sessions with an open tmux window get a green dot, vai and a confirmed chiudi', async ($, on) => {
+  const clock = mock.clock(on, { now: 120_000 })
+  const runs: string[][] = []
+  let windows = '@7 altro·oldoldol\n'
+  const saved = [
+    { id: 'cur', title: 'Questa chat', mtime: 1, isCurrent: true },
+    { id: 'oldoldold', title: 'Sessione aperta', mtime: 1, isCurrent: false },
+    { id: 'closed001', title: 'Sessione chiusa', mtime: 1, isCurrent: false },
+  ]
+  on('env.get', ($, e) => ({ value: (e as { name: string }).name === 'TMUX' ? '/tmp/tmux' : '/home/u' }))
+  on('session.cwd', () => ({ value: '/home/u/repo' }))
+  on('session.id', () => ({ value: 'cur' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('process.run', ($, e) => {
+    const argv = [...e.argv]
+    runs.push(argv)
+    if (argv[0] === 'python3') return result(argv[2]?.endsWith('list_verticals.py') ? '[]' : JSON.stringify(saved))
+    if (argv[1] === 'kill-window') windows = ''
+    return result(argv[1] === 'list-windows' ? windows : '')
+  })
+  await $.command.run({ command: 'sessioni', args: '' } as never)
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await propsOf(ui, /^  ● $/)).toEqual([{ color: 'green' }])
+  expect(await ui.findAll({ type: 'Button', text: 'vai' })).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Button', key: 'go-closed001' } as never)).toHaveLength(0)
+  expect(await ui.findAll({ type: 'Button', key: 'kill-cur' } as never)).toHaveLength(0)
+  await ui.press({ key: 'go-oldoldold' })
+  expect(runs.at(-1)).toEqual(['tmux', 'select-window', '-t', '@7'])
+  // First press asks, nothing is killed yet; the timeout resets it.
+  await ui.press({ key: 'kill-oldoldold' })
+  expect(await ui.findAll({ type: 'Button', text: 'conferma?' })).toHaveLength(1)
+  expect(runs.some(r => r[1] === 'kill-window')).toBe(false)
+  await clock.advance(5000)
+  expect(await ui.findAll({ type: 'Button', text: 'chiudi' })).toHaveLength(1)
+  // vai in between also cancels a pending confirm.
+  await ui.press({ key: 'kill-oldoldold' })
+  await ui.press({ key: 'go-oldoldold' })
+  expect(await ui.findAll({ type: 'Button', text: 'chiudi' })).toHaveLength(1)
+  // Two presses kill the window and the mark goes away.
+  await ui.press({ key: 'kill-oldoldold' })
+  await ui.press({ key: 'kill-oldoldold' })
+  expect(runs.filter(r => r[1] === 'kill-window')).toEqual([['tmux', 'kill-window', '-t', '@7']])
+  expect(await ui.findAll({ type: 'Button', text: 'vai' })).toHaveLength(0)
+})
+
+test('the Verticali section lists this chat\'s verticals and jumps to their window', async ($, on) => {
+  const toasts: string[] = []
+  const runs: string[][] = []
+  const verticals = [
+    { id: 'v1aaaaaaa', slug: 'fix-banda', title: 'Sistema la banda del pannello con un titolo lungo', status: 'active', contextPercent: 42, createdAt: '2026-10-20' },
+    { id: 'v2bbbbbbb', slug: 'docs', title: 'README', status: 'paused', contextPercent: null, createdAt: '2026-10-19' },
+    { id: 'v3ccccccc', slug: 'vecchio', title: 'Finito', status: 'done', contextPercent: 7, createdAt: '2026-10-18' },
+  ]
+  on('env.get', ($, e) => ({ value: (e as { name: string }).name === 'TMUX' ? '/tmp/tmux' : '/home/u' }))
+  on('session.cwd', () => ({ value: '/home/u/repo' }))
+  on('session.id', () => ({ value: 'cur' }))
+  on('clock.now', () => ({ value: 1 }))
+  on('store.set', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', ($, e) => {
+    toasts.push(String((e as { text: string }).text))
+    return { value: undefined }
+  })
+  on('process.run', ($, e) => {
+    const argv = [...e.argv]
+    runs.push(argv)
+    if (argv[0] === 'python3') {
+      return result(argv[2]?.endsWith('list_verticals.py') ? JSON.stringify(verticals) : '[]')
+    }
+    return result(argv[1] === 'list-windows' ? '@1 bash\n@4 fix-banda\n@5 x·v3cccccc\n' : '')
+  })
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.findAll({ type: 'Text', text: /^Verticali$/ } as never)).toHaveLength(0)
+  await $.command.run({ command: 'sessioni', args: '' } as never)
+  const verticalsCall = runs.find(r => r[2]?.endsWith('list_verticals.py'))
+  expect(verticalsCall?.slice(3)).toEqual(['/home/u/.claude/plugins/store', 'cur'])
+  expect(await ui.findAll({ type: 'Text', text: /^Verticali$/ } as never)).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Button', text: '⑂ Verticali 1' })).toHaveLength(1)
+  expect(await propsOf(ui, /^● $/)).toEqual([{ color: 'green', dimColor: false }])
+  expect(await propsOf(ui, /^◐ $/)).toEqual([{ color: 'yellow', dimColor: false }])
+  expect(await propsOf(ui, /^✓ $/)).toEqual([{ dimColor: true }])
+  expect(await ui.findAll({ type: 'Text', text: ' ctx 42%' })).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Text', text: /fix-banda/ })).not.toHaveLength(0)
+  await ui.press({ key: 'vgo-v1aaaaaaa' })
+  expect(runs.at(-1)).toEqual(['tmux', 'select-window', '-t', '@4'])
+  // Found by the ·id8 suffix when the slug does not match.
+  await ui.press({ key: 'vgo-v3ccccccc' })
+  expect(runs.at(-1)).toEqual(['tmux', 'select-window', '-t', '@5'])
+  await ui.press({ key: 'vgo-v2bbbbbbb' })
+  expect(toasts.at(-1)).toBe('Nessuna finestra tmux per docs')
+  // Switch off: section and tab go.
+  await ui.press({ key: 'pane-menu' })
+  expect(await ui.findAll({ type: 'Button', text: '☑ verticali' })).toHaveLength(1)
+  await ui.press({ key: 'pref-paneVerticals' })
+  expect(await ui.findAll({ type: 'Text', text: /^Verticali$/ } as never)).toHaveLength(0)
+  expect(await ui.findAll({ type: 'Button', key: 'tab-verticals' } as never)).toHaveLength(0)
 })

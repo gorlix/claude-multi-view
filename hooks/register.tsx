@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register, RenderChildren, SessionRateLimit } from 'claude-code'
 
-import type { AgentRow, InboxItem, Limit, PacaTask, Prefs, SavedSession, Tab, TabStyle } from '../types'
+import type { AgentRow, GitInfo, InboxItem, Limit, PacaTask, Prefs, SavedSession, Tab, TabStyle, TmuxWindow, Vertical } from '../types'
+import { parseStatus, sameGit, worktreeName } from './git'
 import {
   activeKey,
   isShownTask,
@@ -11,7 +12,20 @@ import {
   refreshTasks,
   resolveProject,
 } from './paca'
-import { SEP, bar, categoryTone, ctxTone, glyphFor, limitTone, tree } from './ui'
+import {
+  SEP,
+  VERTICAL_GLYPHS,
+  bar,
+  categoryTone,
+  ctxTone,
+  fmtDuration,
+  glyphFor,
+  limitTone,
+  parseWindows,
+  tree,
+  windowOfSession,
+  windowOfVertical,
+} from './ui'
 
 // Multi-view: one pane with the session's agents (press one to view its
 // transcript), a band above the prompt saying which chat this is and how many
@@ -20,6 +34,7 @@ import { SEP, bar, categoryTone, ctxTone, glyphFor, limitTone, tree } from './ui
 // when one crosses 80% and 90%. A "Sessioni" button lists the workspace's
 // saved sessions (~/.claude/projects/<cwd>/*.jsonl); pressing one resumes it
 // in a new tmux window, since a mod cannot switch this process's session.
+// Band: git branch and turn timer. Pane: vertical chats, open-window marks. Desktop notifications when away.
 // PACA: the task this chat moved to In Progress sits in the band, the
 // workspace project's open tasks in the pane, status changes toast. Vertical chats' own pane stays in chat-verticali (later).
 
@@ -49,11 +64,15 @@ const DEFAULT_PREFS: Prefs = {
   bandPaca: true,
   bandAgents: true,
   bandInbox: true,
+  bandGit: true,
+  bandTurn: true,
   paneLimits: true,
   paneAgents: true,
   panePaca: true,
   paneSessions: true,
   paneInbox: true,
+  paneVerticals: true,
+  notifyDesktop: true,
   openPaneAtStart: true,
 }
 // The on/off choices, as opposed to tab and tabStyle.
@@ -65,6 +84,7 @@ const TAB_LOOK: Record<Tab | 'settings', [string, string]> = {
   limits: ['▰', 'Limiti'],
   agents: ['●', 'Agenti'],
   sessions: ['↺', 'Sessioni'],
+  verticals: ['⑂', 'Verticali'],
   paca: ['◆', 'PACA'],
   inbox: ['✉', 'Messaggi'],
   settings: ['⚙', 'Impostazioni'],
@@ -92,6 +112,20 @@ const openMsg = atom({ plugin: 'multi-view', key: 'openMsg' } as const, null)
 const sessions = atom({ plugin: 'multi-view', key: 'sessions' } as const, [])
 const showSessions = atom({ plugin: 'multi-view', key: 'showSessions' } as const, false)
 const SESSIONS_SHOWN = 12
+const gitInfo = atom({ plugin: 'multi-view', key: 'gitInfo' } as const, null)
+const GIT_POLL_MS = 30_000
+// Start of the running turn (null when idle), last turn's length, and a clock
+// ticking every few seconds only while a turn runs.
+const turnStart = atom({ plugin: 'multi-view', key: 'turnStart' } as const, null)
+const turnLast = atom({ plugin: 'multi-view', key: 'turnLast' } as const, null)
+const tick = atom({ plugin: 'multi-view', key: 'tick' } as const, 0)
+const TURN_TICK_MS = 5000
+const tmuxWindows = atom({ plugin: 'multi-view', key: 'tmuxWindows' } as const, [])
+// Session id whose "chiudi" waits for a second press.
+const killPending = atom({ plugin: 'multi-view', key: 'killPending' } as const, null)
+const CONFIRM_MS = 5000
+const verticals = atom({ plugin: 'multi-view', key: 'verticals' } as const, [])
+const VERTICALS_POLL_MS = 60_000
 const pacaProject = atom({ plugin: 'multi-view', key: 'pacaProject' } as const, null)
 const pacaTasks = atom({ plugin: 'multi-view', key: 'pacaTasks' } as const, [])
 const pacaActive = atom({ plugin: 'multi-view', key: 'pacaActive' } as const, null)
@@ -194,6 +228,22 @@ const ago = (mtime: number, at: number) => {
 const short = (text: string, max: number) =>
   text.length > max ? `${text.slice(0, max - 1)}…` : text
 
+// A desktop notification, only when nobody is looking at this window: in tmux
+// that is when its window is the active one of an attached session. Never throws.
+async function notify($: EngineInterface, title: string, body: string) {
+  try {
+    if (!(await read($, prefs)).notifyDesktop) return
+    const pane = await $.env.get('TMUX_PANE')
+    if (pane) {
+      const seen = await $.process.run(['tmux', 'display-message', '-p', '-t', pane, '#{window_active}#{session_attached}'])
+      if (seen.exitCode === 0 && seen.stdout.trim() === '11') return
+    }
+    await $.process.run(['notify-send', '-a', 'Claude multi-view', title, body])
+  } catch {
+    // Best effort.
+  }
+}
+
 // Last status seen per agent, to toast on the move from active to done.
 let last = new Map<string, string>()
 
@@ -203,6 +253,7 @@ async function poll($: EngineInterface) {
     const before = last.get(row.id)
     if (before && ACTIVE.has(before) && DONE.has(row.status)) {
       $.ui.toast(`Agente ${row.status}: ${short(row.label, 40)}`)
+      void notify($, `Agente ${row.status}`, short(row.label, 80))
     }
   }
   last = new Map(rows.map(r => [r.id, r.status]))
@@ -223,6 +274,7 @@ async function setLimits($: EngineInterface, raw: readonly SessionRateLimit[]) {
     const hit = THRESHOLDS.find(t => l.percentUsed >= t) ?? 0
     if (hit > before) {
       $.ui.toast(`Limite ${LIMIT_NAMES[l.kind]} al ${l.percentUsed}%`)
+      void notify($, `Limite ${LIMIT_NAMES[l.kind]}`, `al ${l.percentUsed}%`)
     }
     warned.set(l.kind, hit)
   }
@@ -237,6 +289,82 @@ async function projectDir($: EngineInterface) {
   const home = (await $.env.get('HOME')) ?? ''
   const cwd = await $.session.cwd()
   return `${home}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, '-')}`
+}
+
+// Branch, counts and worktree of the session's cwd; null outside a repo.
+async function refreshGit($: EngineInterface) {
+  const git = (...args: string[]) => $.process.run(['git', '--no-optional-locks', ...args])
+  const top = await git('rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir', '--show-toplevel')
+  const status = top.exitCode === 0 ? await git('status', '--porcelain=v2', '--branch') : undefined
+  const parsed = status?.exitCode === 0 ? parseStatus(status.stdout) : undefined
+  const worktree = worktreeName(top.stdout)
+  const info: GitInfo | null = parsed?.branch ? { ...parsed, ...(worktree ? { worktree } : {}) } : null
+  if (!sameGit(await read($, gitInfo), info)) await update($, gitInfo, () => info)
+}
+
+async function tickTurn($: EngineInterface) {
+  if ((await read($, turnStart)) === null) return
+  const at = await $.clock.now()
+  await update($, tick, () => at)
+}
+
+// Open tmux windows, to mark sessions and verticals that already have one.
+async function loadWindows($: EngineInterface) {
+  const run = (await $.env.get('TMUX')) ? await $.process.run(['tmux', 'list-windows', '-a', '-F', '#{window_id} #{window_name}']) : undefined
+  const list: TmuxWindow[] = run?.exitCode === 0 ? parseWindows(run.stdout) : []
+  await update($, tmuxWindows, () => list)
+}
+
+// Vertical chats of this session, from chat-verticali's store (read only).
+async function loadVerticals($: EngineInterface) {
+  const home = (await $.env.get('HOME')) ?? ''
+  const run = await $.process.run(['python3', '-I', `${$.plugin.root}/hooks/list_verticals.py`, `${home}/.claude/plugins/store`, await $.session.id()])
+  if (run.exitCode !== 0) return
+  const list = (JSON.parse(run.stdout) as Vertical[]).filter(v => typeof v.slug === 'string' && v.status in VERTICAL_GLYPHS)
+  await update($, verticals, () => list)
+}
+
+const refreshWindowsAndVerticals = ($: EngineInterface) =>
+  void Promise.all([loadWindows($), loadVerticals($)]).catch(() => undefined)
+
+async function gotoWindow($: EngineInterface, windowId: string) {
+  await update($, killPending, () => null)
+  const run = await $.process.run(['tmux', 'select-window', '-t', windowId])
+  if (run.exitCode !== 0) {
+    $.ui.toast('Finestra tmux non trovata')
+    await loadWindows($)
+  }
+}
+
+async function gotoVertical($: EngineInterface, v: Vertical) {
+  await loadWindows($)
+  const window = windowOfVertical(await read($, tmuxWindows), v)
+  if (!window) {
+    $.ui.toast(`Nessuna finestra tmux per ${v.slug}`)
+    return
+  }
+  await gotoWindow($, window.id)
+}
+
+// Kills the tmux window of a running session: the first press asks, the second
+// (within CONFIRM_MS) does it.
+async function closeWindow($: EngineInterface, row: SavedSession) {
+  if (row.isCurrent) return
+  if ((await read($, killPending)) !== row.id) {
+    await update($, killPending, () => row.id)
+    $.clock.after(CONFIRM_MS, () => void update($, killPending, was => (was === row.id ? null : was)))
+    return
+  }
+  await update($, killPending, () => null)
+  await loadWindows($)
+  const window = windowOfSession(await read($, tmuxWindows), row.id)
+  if (!window) {
+    $.ui.toast('Finestra già chiusa')
+    return
+  }
+  const run = await $.process.run(['tmux', 'kill-window', '-t', window.id])
+  $.ui.toast(run.exitCode === 0 ? `Finestra chiusa: ${short(row.title, 40)}` : `tmux: ${run.stderr.trim()}`)
+  await loadWindows($)
 }
 
 async function loadSessions($: EngineInterface) {
@@ -256,6 +384,8 @@ async function loadSessions($: EngineInterface) {
   }
   const list = JSON.parse(run.stdout) as SavedSession[]
   await update($, sessions, () => list)
+  await loadWindows($)
+  await loadVerticals($).catch(() => undefined)
 }
 
 async function toggleSessions($: EngineInterface) {
@@ -279,9 +409,9 @@ async function resumeSession($: EngineInterface, row: SavedSession) {
   // The window name ends in the first 8 chars of the id: that is how an
   // already running resume is found again.
   const tag = `·${row.id.slice(0, 8)}`
+  await update($, killPending, () => null)
   const windows = await $.process.run(['tmux', 'list-windows', '-a', '-F', '#{window_id} #{window_name}'])
-  const open = windows.exitCode === 0 ? windows.stdout.split('\n').find(l => l.trimEnd().endsWith(tag)) : undefined
-  const windowId = open?.split(' ')[0]
+  const windowId = windows.exitCode === 0 ? windowOfSession(parseWindows(windows.stdout), row.id)?.id : undefined
   if (windowId) {
     await $.process.run(['tmux', 'select-window', '-t', windowId])
     $.ui.toast('Già aperta: salto alla finestra')
@@ -290,6 +420,7 @@ async function resumeSession($: EngineInterface, row: SavedSession) {
   const cwd = await $.session.cwd()
   const run = await $.process.run(['tmux', 'new-window', '-c', cwd, '-n', `${short(row.title, 24)}${tag}`, 'claude', '--resume', row.id])
   $.ui.toast(run.exitCode === 0 ? `Ripresa in tmux: ${short(row.title, 40)}` : `tmux: ${run.stderr.trim()}`)
+  if (run.exitCode === 0) await loadWindows($)
 }
 
 async function startPaca($: EngineInterface) {
@@ -338,8 +469,24 @@ async function syncTmuxTitle($: EngineInterface, isForced = false) {
 }
 
 export const register: Register = on => {
-  on('turn.complete', ($, e, next) => {
+  // Subagent turns carry an agentId: only the main loop's turn is timed.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const at = await $.clock.now()
+      await update($, turnStart, () => at)
+      await update($, tick, () => at)
+    }
+
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      await update($, turnLast, () => e.durationMs)
+      await update($, turnStart, () => null)
+    }
     void syncTmuxTitle($).catch(() => undefined)
+    void refreshGit($).catch(() => undefined)
 
     return next(e)
   })
@@ -370,6 +517,11 @@ export const register: Register = on => {
     await update($, now, () => 0)
     void $.clock.now().then(at => update($, now, () => at))
     $.clock.every(60_000, () => void $.clock.now().then(at => update($, now, () => at)))
+    void refreshGit($).catch(() => undefined)
+    $.clock.every(GIT_POLL_MS, () => void refreshGit($).catch(() => undefined))
+    $.clock.every(TURN_TICK_MS, () => void tickTurn($).catch(() => undefined))
+    refreshWindowsAndVerticals($)
+    $.clock.every(VERTICALS_POLL_MS, () => refreshWindowsAndVerticals($))
     void startPaca($).catch(() => undefined)
     $.clock.every(PACA_POLL_MS, () => void pollTasks($, PACA_POLL_MS).catch(() => undefined))
     void $.session
@@ -479,6 +631,7 @@ export const register: Register = on => {
       const item: InboxItem = { at: await $.clock.now(), from, text: body.text }
       await update($, inbox, list => [...list, item].slice(-INBOX_MAX))
       $.ui.toast(`Messaggio da ${short(from, 30)}`)
+      void notify($, `Messaggio da ${short(from, 30)}`, short(msgTitle(body.text), 100))
     }
     await record().catch(() => undefined)
 
@@ -502,6 +655,10 @@ export const register: Register = on => {
     const ctxPct = await read($, ctx)
     const pref = await read($, prefs)
     const menuOpen = await read($, showMenu)
+    const git = await read($, gitInfo)
+    const started = await read($, turnStart)
+    const lastTurn = await read($, turnLast)
+    const ticked = await read($, tick)
 
     // Under BAND_NARROW columns the bars go and only numbers stay. Segments
     // never shrink: one that does not fit moves whole to the next line.
@@ -544,6 +701,20 @@ export const register: Register = on => {
     if (pref.bandChat) {
       segments.push(['chat', <Text dimColor>chat: {await read($, chat)}</Text>])
     }
+    if (pref.bandGit && git) {
+      segments.push([
+        'git',
+        <Box>
+          {git.worktree && <Text dimColor>{`⎇ ${git.worktree} `}</Text>}
+          <Text color="cyan">{git.branch}</Text>
+          {git.modified > 0 && <Text color="yellow">{` ●${git.modified}`}</Text>}
+          {git.staged > 0 && <Text color="yellow">{` +${git.staged}`}</Text>}
+          {git.untracked > 0 && <Text color="yellow">{` ?${git.untracked}`}</Text>}
+          {git.ahead > 0 && <Text dimColor>{` ↑${git.ahead}`}</Text>}
+          {git.behind > 0 && <Text dimColor>{` ↓${git.behind}`}</Text>}
+        </Box>,
+      ])
+    }
     if (pref.bandPaca && active) {
       segments.push([
         'paca',
@@ -555,6 +726,11 @@ export const register: Register = on => {
           <Text color="blue"> {active.status}: {short(active.title, 40)}</Text>
         </Box>,
       ])
+    }
+    if (pref.bandTurn && started !== null) {
+      segments.push(['turn', <Text color="cyan">{`⏱ ${fmtDuration(Math.max(0, ticked - started))}`}</Text>])
+    } else if (pref.bandTurn && lastTurn !== null) {
+      segments.push(['turn', <Text dimColor>{`⏱ ${fmtDuration(lastTurn)}`}</Text>])
     }
     if (pref.bandAgents && rows.length > 0) {
       segments.push([
@@ -599,6 +775,8 @@ export const register: Register = on => {
       ['bandLimits', 'limiti'],
       ['bandCtx', 'ctx'],
       ['bandChat', 'chat'],
+      ['bandGit', 'git'],
+      ['bandTurn', 'turno'],
       ...(hasPaca ? [['bandPaca', 'task PACA'] as [Switch, string]] : []),
       ['bandAgents', 'agenti'],
       ['bandInbox', 'messaggi'],
@@ -650,6 +828,10 @@ export const register: Register = on => {
     // The inbox stays even when empty, so it is clear where messages land.
     const hasInbox = pref.paneInbox
     const opened = await read($, openMsg)
+    const verts = await read($, verticals)
+    const wins = await read($, tmuxWindows)
+    const pendingKill = await read($, killPending)
+    const hasVerticals = pref.paneVerticals && verts.length > 0
     const style = pref.tabStyle
     const tabs: [Tab, string, string][] = (
       [
@@ -657,6 +839,7 @@ export const register: Register = on => {
         ['limits', hasLimits, undefined],
         ['agents', hasAgents, rows.length],
         ['sessions', hasSessions, undefined],
+        ['verticals', hasVerticals, verts.filter(v => v.status === 'active').length],
         ['paca', hasPaca, openTasks.length],
         ['inbox', hasInbox, msgs.length],
       ] as [Tab, boolean, number | undefined][]
@@ -668,8 +851,10 @@ export const register: Register = on => {
       ['paneLimits', 'limiti'],
       ['paneAgents', 'agenti'],
       ['paneSessions', 'sessioni'],
+      ['paneVerticals', 'verticali'],
       ...(project ? [['panePaca', 'PACA'] as [Switch, string]] : []),
       ['paneInbox', 'messaggi'],
+      ['notifyDesktop', 'notifiche desktop'],
       ['openPaneAtStart', "pannello all'avvio"],
     ]
     const tab: Tab = tabs.some(t => t[0] === pref.tab) ? pref.tab : 'all'
@@ -797,32 +982,74 @@ export const register: Register = on => {
               onPress={() => void toggleSessions($)}
             />
             {sessionsOpen &&
-              (await read($, sessions)).slice(0, SESSIONS_SHOWN).map(row =>
-                row.isCurrent ? (
-                  <Text key={`s-${row.id}`} dimColor>
-                    {'  '}● {short(row.title, width)} (questa)
-                  </Text>
-                ) : (
-                  <Box key={`s-${row.id}`}>
-                    <Text dimColor>{'  ○ '}</Text>
-                    {row.pacaRef && (
-                      <Text inverse color={row.pacaRef === active?.ref ? 'blue' : undefined}>
-                        {' '}
-                        {row.pacaRef}{' '}
-                      </Text>
+              (await read($, sessions)).slice(0, SESSIONS_SHOWN).map(row => {
+                if (row.isCurrent) {
+                  return (
+                    <Text key={`s-${row.id}`} dimColor>
+                      {'  '}● {short(row.title, width)} (questa)
+                    </Text>
+                  )
+                }
+                // A session with an open tmux window: green dot, jump or close it.
+                const win = windowOfSession(wins, row.id)
+                return (
+                  <Box key={`s-${row.id}`} flexDirection="column">
+                    <Box>
+                      {win ? <Text color="green">{'  ● '}</Text> : <Text dimColor>{'  ○ '}</Text>}
+                      {row.pacaRef && (
+                        <Text inverse color={row.pacaRef === active?.ref ? 'blue' : undefined}>
+                          {' '}
+                          {row.pacaRef}{' '}
+                        </Text>
+                      )}
+                      {row.pacaRef && <Text> </Text>}
+                      <Button
+                        key={`resume-${row.id}`}
+                        label={short(row.title, width - 2 - (row.pacaRef ? row.pacaRef.length + 3 : 0))}
+                        onPress={() => void resumeSession($, row)}
+                      />
+                      <Text dimColor> {ago(row.mtime, at)}</Text>
+                    </Box>
+                    {win && (
+                      <Box>
+                        <Text dimColor>{'    └ '}</Text>
+                        <Button key={`go-${row.id}`} label="vai" onPress={() => void gotoWindow($, win.id)} />
+                        <Text dimColor>{' │ '}</Text>
+                        <Button
+                          key={`kill-${row.id}`}
+                          label={pendingKill === row.id ? 'conferma?' : 'chiudi'}
+                          onPress={() => void closeWindow($, row)}
+                        />
+                      </Box>
                     )}
-                    {row.pacaRef && <Text> </Text>}
-                    <Button
-                      key={`resume-${row.id}`}
-                      label={short(row.title, width - 2 - (row.pacaRef ? row.pacaRef.length + 3 : 0))}
-                      onPress={() => void resumeSession($, row)}
-                    />
-                    <Text dimColor> {ago(row.mtime, at)}</Text>
                   </Box>
-                ),
-              )}
+                )
+              })}
           </Box>,
         )}
+        {hasVerticals &&
+          isShown('verticals') &&
+          section(
+            'Verticali',
+            'magenta',
+            <Box flexDirection="column">
+              {verts.map(v => {
+                const g = VERTICAL_GLYPHS[v.status]
+                return (
+                  <Box key={`v-${v.id}`}>
+                    <Text color={g.color} dimColor={g.dim}>
+                      {g.glyph}{' '}
+                    </Text>
+                    <Text bold={v.status === 'active'}>{short(v.slug, 24)}</Text>
+                    <Text dimColor> {short(v.title, Math.max(8, width - 24 - 12))}</Text>
+                    {v.contextPercent !== null && <Text dimColor>{` ctx ${v.contextPercent}%`}</Text>}
+                    <Text> </Text>
+                    <Button key={`vgo-${v.id}`} label="vai" onPress={() => void gotoVertical($, v)} />
+                  </Box>
+                )
+              })}
+            </Box>,
+          )}
         {hasPaca &&
           isShown('paca') &&
           section(
