@@ -15,26 +15,45 @@ Nel terminale è una sola riga; qui è spezzata per stare in pagina. I segmenti,
 ```
 5h ▰▰▰▰▱▱▱▱ 42% 2h10m │ sett ▰▰▱▱▱▱▱▱ 18% 4g3h │ ctx ▰▰▱▱▱▱▱▱ 34% │
 chat: homelab │  HOME-12  In Progress: Scheda cluster nel pannello │
-● 2 ◐ 1 / 3 │ ✉ 2 │ Sessioni
+● 2 ◐ 1 / 3 │ ✉ 2 │ ⋯
 ```
 
-1. `5h ...` e `sett ...`: i limiti di utilizzo, barra a 8 celle, percentuale, tempo al reset. Colori: barra e percentuale verdi, gialle da 80%, rosse da 90%; nome, celle vuote e tempo al reset attenuati.
+1. `5h ...` e `sett ...`: i limiti di utilizzo, barra a 8 celle, percentuale, tempo al reset (premilo per vedere l'orario del reset, es. `18:40` o `lun 18:40`; ripremi per tornare al conto alla rovescia). Colori: barra e percentuale verdi, gialle da 80%, rosse da 90%; nome, celle vuote e tempo al reset attenuati.
 2. `ctx ...`: contesto della chat. Verde, giallo da 60%, rosso da 80%.
 3. `chat: homelab`: ultima cartella del percorso di lavoro, attenuata.
 4. ` HOME-12 ` e `In Progress: ...`: il task PACA attivo. Il riferimento è un badge in inverse blu, stato e titolo (tagliato a 40 caratteri) in blu.
 5. `● 2 ◐ 1 / 3`: agenti attivi (verde), idle (giallo), totale (attenuato).
 6. `✉ 2`: messaggi in coda nell'inbox, in giallo.
-7. `Sessioni`: pulsante che apre l'elenco delle sessioni salvate.
+7. `⋯`: pulsante, sempre visibile, che apre il menù della banda (vedi sotto).
 
 Quando guardi la trascrizione di un agente la coda della banda diventa:
 
 ```
-... │ ● 2 ◐ 1 / 3 │ Sessioni │ vista: scrivi-test │ Torna
+... │ ● 2 ◐ 1 / 3 │ vista: scrivi-test │ Torna │ ⋯
 ```
 
-`vista: ...` è in ciano, `Torna` è un pulsante e riporta alla conversazione principale. Se la sessione non ha ancora ricevuto una risposta mancano limiti e `ctx`; senza agenti, task attivo e messaggi mancano i rispettivi segmenti.
+Sotto i 120 caratteri di larghezza la banda toglie le barre e tiene solo i numeri (`5h 31% 14:20`); un segmento che non ci sta va a capo intero, senza spezzarsi.
+
+`vista: ...` è in ciano, `Torna` è un pulsante e riporta alla conversazione principale. Se la sessione non ha ancora ricevuto una risposta mancano limiti e `ctx`; senza agenti, task attivo e messaggi mancano i rispettivi segmenti. I segmenti si possono anche spegnere dal menù `⋯`: quelli rimasti sono separati da un solo `│`, mai uno in testa o doppio.
+
+Premendo `⋯` sotto la banda compare una seconda riga con le impostazioni della banda, ognuna un pulsante a due stati (`☑` acceso, `☐` spento):
+
+```
+5h ▰▰▰▰▱▱▱▱ 42% 2h10m │ ... │ ⋯
+☑ limiti │ ☑ ctx │ ☑ chat │ ☑ task PACA │ ☑ agenti │ ☑ messaggi │ chiudi
+```
+
+`chiudi` (o di nuovo `⋯`) richiude la riga. `task PACA` c'è solo se il workspace è collegato a un progetto PACA, come nel `⚙` del pannello. Le scelte si salvano e valgono per tutte le sessioni; `/multiview` apre lo stesso menù. Ogni interruttore agisce solo sulla banda: per il pannello c'è il `⚙` nel pannello stesso (vedi sotto).
 
 ### Pannello "Agenti"
+
+In cima al pannello c'è la barra delle schede, una riga di pulsanti (va a capo se il pannello è stretto):
+
+```
+▸ ☰ Tutto  ▰ Limiti  ● Agenti 5  ↺ Sessioni  ◆ PACA 3  ✉ Messaggi 2  ⚙ Impostazioni
+```
+
+Ogni scheda ha icona e nome: `☰ Tutto`, `▰ Limiti`, `● Agenti N`, `↺ Sessioni`, `◆ PACA N`, `✉ Messaggi N`, `⚙ Impostazioni`. Dal `⚙` si sceglie se mostrarle con icona + nome (predefinito), solo icona (la barra più corta) o solo nome. La scheda scelta ha `▸` davanti e mostra solo la sua sezione; `☰` le mostra tutte. In fondo alla barra c'è `⚙`, che apre le impostazioni del pannello (vedi sotto). `▰` c'è solo se ci sono limiti da mostrare, `● N` conta le righe di agenti (senza numero se sono zero), `◆ N` i task aperti mostrati (solo se il workspace è agganciato), `✉ N` i messaggi (`✉` senza numero se l'inbox è vuota: la scheda resta). Se la scheda scelta sparisce (per esempio spegni la sua sezione dal `⚙`) il pannello torna a `☰`. La scheda scelta si salva insieme alle impostazioni.
 
 Sezioni con bordo arrotondato e titolo in grassetto, nell'ordine in cui compaiono; ognuna c'è solo se ha contenuto (Agenti e Sessioni ci sono sempre, PACA solo se il workspace è agganciato). Qui sono tutte aperte, in un pannello largo 56 colonne:
 
@@ -75,19 +94,19 @@ Sezioni con bordo arrotondato e titolo in grassetto, nell'ordine in cui compaion
 ╰──────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────╮
 │ ✉ Messaggi (2)                                       │
-│ altra sessione › Ho finito il refactor di st…        │
-│ verticale-acme › Riepilogo pronto, vedi il br…       │
+│ ▸ 14:32 · verticale-acme · Riepilogo pronto          │
+│ ▸ 13:05 · altra sessione · Ho finito il refactor d…  │
 │ Svuota inbox                                         │
 ╰──────────────────────────────────────────────────────╯
 ```
 
 Nel disegno gli stati degli agenti sono incolonnati per leggibilità; nel pannello reale seguono il nome dopo uno spazio.
 
-- **Limiti** (bordo grigio): la barra si allarga con il pannello, da 8 a 24 celle (qui 24); sotto, `reset tra ...` attenuato.
+- **Limiti** (bordo grigio): la barra si allarga con il pannello, da 8 a 24 celle (qui 24); sotto, `reset tra ...`: è un pulsante che alterna `reset tra 2h10m` e l'orario (`reset alle 18:40`, `reset lun 18:40` se non è oggi). La scelta vale insieme per banda e pannello.
 - **Agenti** (bordo verde): `Conversazione principale` è un pulsante, con `▸` quando è la vista corrente. Ogni agente ha il glifo di stato, un pulsante col nome (`▸` davanti se è quello in vista) e a destra `stato · tipo`. Senza agenti compare `Nessun agente in questa sessione.`
 - **Sessioni** (bordo ciano): il pulsante `Sessioni del workspace` apre e chiude l'elenco (massimo 12, dalla più recente). La sessione corrente è attenuata e non cliccabile. Il badge `HOME-16` è in inverse, blu se è il task attivo di questa chat, altrimenti col colore del terminale. L'età (`5m fa`) è attenuata.
 - **PACA** (bordo blu): il pulsante riassume `<progetto> (N aperti · M backlog)`. Aperto, mostra fino a 10 task: badge del riferimento in inverse e stato dello stesso colore (blu, magenta o giallo secondo la categoria), titolo sotto, poi i tre pulsanti separati da `│` attenuato.
-- **Messaggi** (bordo giallo): gli ultimi 5, `mittente › testo` su una riga sola (mittente in giallo, tagliato a 20 caratteri); il pulsante `Svuota inbox` li cancella.
+- **Messaggi** (bordo giallo, grigio se vuota): c'è sempre, anche senza messaggi, con la riga `Nessun messaggio...` che spiega cosa ci arriva. Mostra gli ultimi 5, il più recente in alto, come una riga sola `▸ 14:32 · chat · titolo`: ora d'arrivo, chat che l'ha mandato (tagliata a 20 caratteri) e titolo, cioè la prima riga del messaggio fino al primo punto, senza segni markdown; la riga è tagliata alla larghezza del pannello. Premendo una riga il messaggio si apre per intero, con `Copia` e `Nel prompt` (lo mette nel prompt per rispondere o riprenderlo); ripremendo si richiude. `Svuota inbox` li cancella.
 
 ### Finestre tmux col titolo della chat
 
@@ -136,28 +155,67 @@ Altri colori:
 
 Una riga sopra il prompt, con i segmenti separati da `│` attenuato, da sinistra a destra:
 
-- **Limiti di utilizzo**: 5h e settimanale (`sett`) come mini barra a 8 celle (`5h ▰▰▰▰▱▱▱▱ 42% 2h10m`), con percentuale usata e tempo al reset. Barra e percentuale sono verdi, gialle da 80% e rosse da 90%. Il tempo al reset si aggiorna una volta al minuto.
+- **Limiti di utilizzo**: 5h e settimanale (`sett`) come mini barra a 8 celle (`5h ▰▰▰▰▱▱▱▱ 42% 2h10m`), con percentuale usata e tempo al reset. Barra e percentuale sono verdi, gialle da 80% e rosse da 90%. Il tempo al reset si aggiorna una volta al minuto; premendolo mostra l'orario locale del reset e viceversa.
 - **Contesto**: `ctx ▰▰▱▱▱▱▱▱ 34%`, la percentuale di finestra di contesto usata dalla chat. Verde sotto il 60%, giallo da 60%, rosso da 80% (60% è la soglia oltre cui conviene passare a una nuova chat). Non compare finché la sessione non ha ricevuto una risposta.
 - **Nome della chat**: l'ultima cartella del percorso di lavoro (`chat: homelab`).
 - **Task PACA attivo**: il riferimento come etichetta a colori invertiti, poi stato e titolo in blu (` HOME-12 ` `In Progress: titolo`). Vedi la sezione PACA.
 - **Conteggio agenti**: `● 2 ◐ 1 / 3`, cioè attivi in verde, idle in giallo, totale attenuato; solo se c'è almeno un agente.
 - **Messaggi in arrivo**: `✉ N` in giallo, se l'inbox non è vuota.
 - Pulsante **Sessioni**: apre il pannello con l'elenco delle sessioni salvate.
+- Pulsante **⋯**: apre il menù della banda sotto la banda.
 - **Vista agente**: quando stai guardando la trascrizione di un agente compare `vista: <nome>` e il pulsante **Torna**, che riporta alla conversazione principale.
 
 La banda non compare se Claude Code sta mostrando il questionario di feedback.
 
+### Impostazioni: banda e pannello
+
+Le impostazioni sono divise: quelle della banda stanno nella banda, quelle del pannello nel pannello, e ognuna controlla solo la propria superficie (per esempio la banda può mostrare solo i limiti mentre il pannello mostra tutto il resto).
+
+`⋯` in fondo alla banda (o `/multiview`) apre una seconda riga con sette interruttori e `chiudi`:
+
+- **limiti**: mostra o nasconde i segmenti 5h e `sett`.
+- **ctx**: il segmento `ctx`.
+- **chat**: il testo `chat: <nome>`.
+- **task PACA**: l'etichetta del task attivo.
+- **agenti**: il conteggio `● 2 ◐ 1 / 3`.
+- **messaggi**: `✉ N`.
+- **sessioni**: il pulsante `Sessioni`.
+
+Il pulsante `⋯` è sempre visibile; `vista: ...` e `Torna` compaiono sempre quando guardi un agente.
+
+`⚙` in fondo alla barra delle schede del pannello apre la sezione `Impostazioni` (bordo grigio), subito sotto la barra, con un interruttore per riga e `chiudi`:
+
+```
+╭──────────────────────────╮
+│ Impostazioni             │
+│ ☑ limiti                 │
+│ ☑ agenti                 │
+│ ☑ sessioni               │
+│ ☑ PACA                   │
+│ ☑ messaggi               │
+│ ☑ pannello all'avvio     │
+│ schede: ◉ icona + nome   │
+│ chiudi                   │
+╰──────────────────────────╯
+```
+
+- **limiti**, **agenti**, **sessioni**, **PACA** (solo se il workspace è agganciato), **messaggi**: una sezione spenta sparisce da ogni scheda e sparisce anche la sua scheda; se era la scheda scelta il pannello torna a `☰`.
+- **pannello all'avvio**: se spento, il pannello non si apre da solo all'avvio della sessione; i comandi lo aprono comunque.
+- **schede**: `◉ icona + nome`, `○ solo icona`, `○ solo nome`, l'aspetto della barra delle schede (compreso `⚙`).
+
+Tutte le scelte, più la scheda del pannello, stanno in un solo oggetto salvato nello store del plugin con la chiave globale `prefs` a ogni cambio e riletto all'avvio, prima di decidere se aprire il pannello (i nomi sono `bandLimits`, `bandCtx`, `bandChat`, `bandPaca`, `bandAgents`, `bandInbox`, `paneLimits`, `paneAgents`, `panePaca`, `paneSessions`, `paneInbox`, `openPaneAtStart`, `tab`; tutti accesi di default, e quelli mancanti in un salvataggio vecchio restano accesi). Se lo store non risponde, un toast avvisa che le impostazioni non sono salvate. Le righe di menù aperte o chiuse non si salvano.
+
 ### Pannello "Agenti"
 
-Si apre da solo all'avvio della sessione (vedi i limiti) e con `/agenti`. Dall'alto:
+Si apre da solo all'avvio della sessione (vedi i limiti; si può spegnere dal `⚙` del pannello) e con `/agenti`. Dall'alto, la barra delle schede (`☰`, `▰`, `● N`, `↺`, `◆ N`, `✉ N`, `⚙`) e poi:
 
 Il pannello è fatto di sezioni con bordo arrotondato e titolo colorato, solo quelle che hanno contenuto:
 
-1. **Limiti**: 5h e settimanale con una barra più larga della banda (si adatta alla larghezza del pannello, da 8 a 24 celle), la percentuale e sotto il tempo al reset (`reset tra 2h10m`). Stessi colori della banda.
+1. **Limiti**: 5h e settimanale con una barra più larga della banda (si adatta alla larghezza del pannello, da 8 a 24 celle), la percentuale e sotto il tempo al reset (`reset tra 2h10m`), che premuto diventa l'orario (`reset alle 18:40`). Stessi colori della banda.
 2. **Agenti**: il pulsante **Conversazione principale** (con `▸` quando è la vista corrente) e l'**albero degli agenti**, con i figli sotto al genitore tramite i connettori `├─` e `└─`. Ogni riga ha un glifo di stato e un pulsante: un click apre la trascrizione di quell'agente nella vista principale. A destra stato e tipo. Glifi: `●` verde per running e ciano per pending e waiting, `◐` giallo per idle, `✓` attenuato per completed, `✗` rosso per failed, `■` attenuato per killed.
 3. **Sessioni**: la sezione richiudibile con le sessioni del workspace (vedi sotto).
 4. **PACA**: visibile solo se il workspace è agganciato a un progetto.
-5. **Messaggi**: gli ultimi 5 messaggi dell'inbox, con mittente e testo su una riga, e il pulsante **Svuota inbox**.
+5. **Messaggi**: l'inbox, sempre presente. Ci arrivano i messaggi di altre sessioni Claude Code (per esempio una chat verticale che chiude il lavoro e manda il riepilogo alla chat madre). Gli ultimi 5, il più recente in alto, una riga ciascuno con ora, chat e titolo; premendone uno si legge per intero e si può copiare o mettere nel prompt. **Svuota inbox** li cancella. I messaggi restano solo per la durata della sessione.
 
 ### Titolo della chat sulla finestra tmux
 
@@ -208,6 +266,7 @@ Per ogni task ci sono tre pulsanti:
 
 | Comando | Cosa fa |
 |---|---|
+| `/multiview` | Apre il menù della banda sotto la banda (`⋯`); le impostazioni del pannello sono nel `⚙` del pannello. |
 | `/agenti` | Rilegge gli agenti e apre il pannello. |
 | `/sessioni` | Apre il pannello con la sezione sessioni espansa e ricaricata. |
 | `/paca-tasks` | Apre il pannello con la sezione PACA espansa. Se il workspace non è agganciato, suggerisce `/paca-link`. |
@@ -269,7 +328,7 @@ claude-multi-view/
 │   └── list_sessions.py   # sessioni salvate (titolo, task PACA) in JSON
 ├── types/index.d.ts       # tipi condivisi e stato dichiarato del plugin
 ├── tests/
-│   ├── register.test.ts   # inbox, albero agenti, limiti, sessioni
+│   ├── register.test.ts   # inbox, albero agenti, limiti, schede, menù, sessioni
 │   ├── paca.test.ts       # parser PACA, backlog, lock, aggancio
 │   └── test_list_sessions.py  # ref PACA dalle trascrizioni
 └── tsconfig.json          # estende .claude-plugin/types/tsconfig.json
@@ -295,7 +354,7 @@ Vincoli da conoscere, scoperti a proprie spese:
 
 - **Limiti di utilizzo.** Si leggono dall'ultima risposta dell'API, quindi mancano finché la sessione non ne ha ricevuta una. I valori sono quelli dell'ultima risposta, non una lettura in tempo reale.
 - **Agenti.** Si rileggono ogni 2 secondi; quelli lanciati dai workflow non compaiono.
-- **Apertura automatica del pannello.** All'avvio la mod chiede di aprire il pannello, ma è l'engine a decidere se c'è posto: secondo la documentazione delle mod un pannello aperto senza un'azione dell'utente si apre solo da 144 colonne in su. Sotto, si apre con `/agenti` o col pulsante Sessioni.
+- **Apertura automatica del pannello.** All'avvio la mod chiede di aprire il pannello, ma è l'engine a decidere se c'è posto: secondo la documentazione delle mod un pannello aperto senza un'azione dell'utente si apre solo da 144 colonne in su. Sotto, si apre con `/agenti` o `/sessioni`.
 - **Mittente dei messaggi.** Per i messaggi tra sessioni il mittente è quello che l'engine espone (nome del teammate o del plugin); molto spesso non c'è e compare "altra sessione".
 - **Sessioni.** Il controllo "già aperta" riconosce solo le finestre aperte dalla mod (nome col suffisso dell'id): una `claude --resume` lanciata a mano in un'altra finestra non si vede, e se la finestra viene rinominata si può riaprire. Il riferimento PACA è quello trovato nella trascrizione, non una verità: se la chat ha citato un altro task per ultimo, vince quello. Il pannello ne mostra solo 12.
 - **PACA e il formato testuale.** L'MCP di PACA risponde con testo formattato, non JSON. I parser leggono i blocchi `Chiave: valore` e sono fragili: se PACA cambia formato, si rompono. I test coprono il formato attuale e sono il primo posto dove accorgersene.

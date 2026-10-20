@@ -23,6 +23,27 @@ export type PacaTask = {
   updated: string
 }
 
+export type Tab = 'all' | 'limits' | 'agents' | 'sessions' | 'paca' | 'inbox'
+
+export type TabStyle = 'both' | 'icon' | 'name'
+
+export type Prefs = {
+  tab: Tab
+  tabStyle: TabStyle
+  bandLimits: boolean
+  bandCtx: boolean
+  bandChat: boolean
+  bandPaca: boolean
+  bandAgents: boolean
+  bandInbox: boolean
+  paneLimits: boolean
+  paneAgents: boolean
+  panePaca: boolean
+  paneSessions: boolean
+  paneInbox: boolean
+  openPaneAtStart: boolean
+}
+
 export type InboxItem = { at: number; from: string; text: string }
 
 declare module 'claude-code' {
@@ -33,6 +54,7 @@ declare module 'claude-code' {
       chat: string
       limits: Limit[]
       now: number
+      resetClock: boolean
       sessions: SavedSession[]
       showSessions: boolean
       pacaProject: PacaProject | null
@@ -41,6 +63,10 @@ declare module 'claude-code' {
       pacaBacklog: number
       ctx: number | null
       showPaca: boolean
+      prefs: Prefs
+      showMenu: boolean
+      showPaneMenu: boolean
+      openMsg: number | null
     }
   }
 }

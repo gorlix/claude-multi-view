@@ -9,7 +9,7 @@ export const SEP = ' │ '
 // Fill cells out of `cells`, at least one while anything is used.
 export const bar = (pct: number, cells: number) => {
   const clamped = Math.max(0, Math.min(100, pct))
-  const filled = clamped > 0 ? Math.max(1, Math.round((clamped / 100) * cells)) : 0
+  const filled = clamped > 0 && cells > 0 ? Math.max(1, Math.round((clamped / 100) * cells)) : 0
   return { on: '▰'.repeat(filled), off: '▱'.repeat(cells - filled) }
 }
 

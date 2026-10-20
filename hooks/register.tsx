@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register, RenderChildren, SessionRateLimit } from 'claude-code'
 
-import type { AgentRow, InboxItem, Limit, PacaTask, SavedSession } from '../types'
+import type { AgentRow, InboxItem, Limit, PacaTask, Prefs, SavedSession, Tab, TabStyle } from '../types'
 import {
   activeKey,
   isShownTask,
@@ -35,6 +35,59 @@ const chat = atom({ plugin: 'multi-view', key: 'chat' } as const, '')
 const limits = atom({ plugin: 'multi-view', key: 'limits' } as const, [])
 // Refreshed once a minute so the "resets in" countdown moves.
 const now = atom({ plugin: 'multi-view', key: 'now' } as const, 0)
+// Pressing a reset time switches every limit between time left and clock time.
+const resetClock = atom({ plugin: 'multi-view', key: 'resetClock' } as const, false)
+
+// Menu choices, saved in the plugin store under one global key.
+const PREFS_KEY = 'prefs'
+const DEFAULT_PREFS: Prefs = {
+  tab: 'all',
+  tabStyle: 'both',
+  bandLimits: true,
+  bandCtx: true,
+  bandChat: true,
+  bandPaca: true,
+  bandAgents: true,
+  bandInbox: true,
+  paneLimits: true,
+  paneAgents: true,
+  panePaca: true,
+  paneSessions: true,
+  paneInbox: true,
+  openPaneAtStart: true,
+}
+// The on/off choices, as opposed to tab and tabStyle.
+type Switch = keyof Omit<Prefs, 'tab' | 'tabStyle'>
+
+// Tab labels, single-width glyphs only (emoji have ambiguous width).
+const TAB_LOOK: Record<Tab | 'settings', [string, string]> = {
+  all: ['☰', 'Tutto'],
+  limits: ['▰', 'Limiti'],
+  agents: ['●', 'Agenti'],
+  sessions: ['↺', 'Sessioni'],
+  paca: ['◆', 'PACA'],
+  inbox: ['✉', 'Messaggi'],
+  settings: ['⚙', 'Impostazioni'],
+}
+const TAB_STYLES: [TabStyle, string][] = [
+  ['both', 'icona + nome'],
+  ['icon', 'solo icona'],
+  ['name', 'solo nome'],
+]
+
+const tabLabel = (name: Tab | 'settings', style: TabStyle, count?: number) => {
+  const [icon, word] = TAB_LOOK[name]
+  const base = style === 'icon' ? icon : style === 'name' ? word : `${icon} ${word}`
+  return count ? `${base} ${count}` : base
+}
+
+const prefs = atom({ plugin: 'multi-view', key: 'prefs' } as const, DEFAULT_PREFS)
+// Not saved: the settings line under the band starts closed.
+const showMenu = atom({ plugin: 'multi-view', key: 'showMenu' } as const, false)
+// Same for the pane's settings section under the tab bar.
+const showPaneMenu = atom({ plugin: 'multi-view', key: 'showPaneMenu' } as const, false)
+// Arrival time of the inbox message opened in full, if any.
+const openMsg = atom({ plugin: 'multi-view', key: 'openMsg' } as const, null)
 
 const sessions = atom({ plugin: 'multi-view', key: 'sessions' } as const, [])
 const showSessions = atom({ plugin: 'multi-view', key: 'showSessions' } as const, false)
@@ -50,6 +103,8 @@ const PACA_SHOWN = 10
 
 const LIMIT_NAMES: Record<string, string> = { five_hour: '5h', seven_day: 'sett' }
 const THRESHOLDS = [90, 80]
+// Band narrower than this drops its bars and keeps the numbers.
+const BAND_NARROW = 120
 
 const toRow = (a: AgentInfo): AgentRow => ({
   id: a.id,
@@ -77,6 +132,57 @@ const until = (resetsAt: string | undefined, at: number) => {
   const m = mins % 60
   return d > 0 ? `${d}g${h}h` : h > 0 ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`
 }
+
+const DAYS = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab']
+
+// "18:40" today, "lun 18:40" on another day: local time the window resets.
+const hhmm = (ms: number) => {
+  const when = new Date(ms)
+  return `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
+}
+
+// A peer message from another Claude Code session arrives wrapped as
+// <cross-session-message from="…" from-name="…">body</cross-session-message>:
+// the sender is its from-name and the body is the message.
+const unwrap = (text: string) => {
+  const m = /^\s*<cross-session-message\b([^>]*)>\s*([\s\S]*?)\s*<\/cross-session-message>\s*$/.exec(text)
+  if (!m) return { text }
+  return { name: /\bfrom-name="([^"]*)"/.exec(m[1] ?? '')?.[1], text: m[2] ?? '' }
+}
+
+// A message's title: its first line without markdown marks, cut at the
+// first sentence end, so a long one-line message still reads as a title.
+const msgTitle = (text: string) => {
+  const first = text.split('\n').map(l => l.trim()).find(Boolean) ?? ''
+  const line = first.replace(/^[#>*\-\s]+/, '').replace(/\*\*/g, '')
+  const stop = line.search(/[.:;!?](\s|$)/)
+  return stop > 0 ? line.slice(0, stop) : line
+}
+
+const clockAt = (resetsAt: string | undefined, at: number) => {
+  if (!resetsAt || !at) return ''
+  const when = new Date(Date.parse(resetsAt))
+  const hm = hhmm(when.getTime())
+  return when.toDateString() === new Date(at).toDateString() ? hm : `${DAYS[when.getDay()]} ${hm}`
+}
+
+const toggleResetClock = ($: EngineInterface) => void update($, resetClock, isClock => !isClock)
+
+async function setPrefs($: EngineInterface, patch: Partial<Prefs>) {
+  const next = { ...(await read($, prefs)), ...patch }
+  await update($, prefs, () => next)
+  await $.store.set(PREFS_KEY, next).catch(() => $.ui.toast('Impostazioni non salvate'))
+}
+
+async function loadPrefs($: EngineInterface) {
+  const saved = await $.store.get(PREFS_KEY).catch(() => undefined)
+  if (saved && typeof saved === 'object') await update($, prefs, () => ({ ...DEFAULT_PREFS, ...(saved as Partial<Prefs>) }))
+}
+
+const toggleMenu = ($: EngineInterface, isOpen?: boolean) =>
+  void update($, showMenu, was => isOpen ?? !was)
+
+const togglePaneMenu = ($: EngineInterface) => void update($, showPaneMenu, was => !was)
 
 // "5m fa", "3h fa", "2g fa".
 const ago = (mtime: number, at: number) => {
@@ -248,6 +354,7 @@ export const register: Register = on => {
     void syncTmuxTitle($).catch(() => undefined)
     const cwd = await $.session.cwd()
     await update($, chat, () => cwd.split('/').filter(Boolean).pop() ?? cwd)
+    await loadPrefs($)
     // Each command on its own: a name taken (a skill `paca` exists) must not
     // stop the others from registering.
     const command = (name: string, description: string) =>
@@ -257,6 +364,7 @@ export const register: Register = on => {
     await command('paca-tasks', 'Mostra i task aperti del progetto PACA di questo workspace')
     await command('paca-link', 'Collega il workspace a un progetto PACA: /paca-link <PREFISSO> [server MCP] | auto | off')
     await command('titolo-finestra', 'Rinomina la finestra tmux con il titolo di questa chat')
+    await command('multiview', 'Apre il menù della banda di multi-view (le impostazioni del pannello sono nel ⚙ del pannello)')
     await command('inbox-clear', 'Svuota i messaggi arrivati da altre sessioni')
     $.clock.every(POLL_MS, () => void poll($))
     await update($, now, () => 0)
@@ -271,7 +379,7 @@ export const register: Register = on => {
         await setLimits($, u.rateLimits)
       })
       .catch(() => undefined)
-    void $.ui.open({ id: PANE, title: 'Agenti' })
+    if ((await read($, prefs)).openPaneAtStart) void $.ui.open({ id: PANE, title: 'Agenti' })
 
     return next(e)
   })
@@ -292,6 +400,12 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: 'Agenti' })
 
     return { text: 'Pannello agenti aperto.' }
+  })
+
+  on('command.run', { command: 'multiview' }, async $ => {
+    toggleMenu($, true)
+
+    return { text: 'Menù della banda aperto sotto la banda (⋯). Le impostazioni del pannello sono nel ⚙ in fondo alla barra delle schede.' }
   })
 
   on('command.run', { command: 'sessioni' }, async $ => {
@@ -355,12 +469,14 @@ export const register: Register = on => {
   on('session.receive', { origin: { kind: 'peer' } }, async ($, e, next) => {
     // Recording is best effort: the delivery always goes on to the model.
     const origin = e.origin
+    const body = unwrap(e.text)
     const from =
       ('teammate' in origin ? origin.teammate : undefined) ??
       ('plugin' in origin ? origin.plugin : undefined) ??
+      body.name ??
       'altra sessione'
     const record = async () => {
-      const item: InboxItem = { at: await $.clock.now(), from, text: e.text }
+      const item: InboxItem = { at: await $.clock.now(), from, text: body.text }
       await update($, inbox, list => [...list, item].slice(-INBOX_MAX))
       $.ui.toast(`Messaggio da ${short(from, 30)}`)
     }
@@ -381,70 +497,129 @@ export const register: Register = on => {
     const viewedRow = viewed ? rows.find(r => r.id === viewed) : undefined
     const lims = await read($, limits)
     const at = await read($, now)
+    const isClock = await read($, resetClock)
     const active = await read($, pacaActive)
     const ctxPct = await read($, ctx)
+    const pref = await read($, prefs)
+    const menuOpen = await read($, showMenu)
 
+    // Under BAND_NARROW columns the bars go and only numbers stay. Segments
+    // never shrink: one that does not fit moves whole to the next line.
+    const isNarrow = (e.viewport?.columns ?? Infinity) < BAND_NARROW
+    const cells = isNarrow ? 0 : 8
     const dim = <Text dimColor>{SEP}</Text>
 
-    return (
-      <Box>
-        {lims.map(l => {
-          const b = bar(l.percentUsed, 8)
-          const tone = limitTone(l.percentUsed)
-          const left = until(l.resetsAt, at)
-          return (
-            <Box key={`lim-${l.kind}`}>
-              <Text dimColor>{LIMIT_NAMES[l.kind]} </Text>
-              <Text color={tone}>{b.on}</Text>
-              <Text dimColor>{b.off}</Text>
-              <Text color={tone}> {l.percentUsed}%</Text>
-              {left && <Text dimColor> {left}</Text>}
-              {dim}
-            </Box>
-          )
-        })}
-        {ctxPct !== null && (
+    // Visible segments, joined by one separator each: a hidden one leaves no
+    // leading or doubled separator.
+    const segments: [string, RenderChildren][] = []
+    if (pref.bandLimits) {
+      for (const l of lims) {
+        const b = bar(l.percentUsed, cells)
+        const tone = limitTone(l.percentUsed)
+        const left = isClock ? clockAt(l.resetsAt, at) : until(l.resetsAt, at)
+        segments.push([
+          `lim-${l.kind}`,
           <Box>
-            <Text dimColor>ctx </Text>
-            <Text color={ctxTone(ctxPct)}>{bar(ctxPct, 8).on}</Text>
-            <Text dimColor>{bar(ctxPct, 8).off}</Text>
-            <Text color={ctxTone(ctxPct)}> {ctxPct}%</Text>
-            {dim}
+            <Text dimColor>{LIMIT_NAMES[l.kind]} </Text>
+            <Text color={tone}>{b.on}</Text>
+            <Text dimColor>{b.off}</Text>
+            <Text color={tone}>{cells ? ' ' : ''}{l.percentUsed}%</Text>
+            {left && <Text> </Text>}
+            {left && <Button key={`reset-${l.kind}`} label={left} onPress={() => toggleResetClock($)} />}
+          </Box>,
+        ])
+      }
+    }
+    if (pref.bandCtx && ctxPct !== null) {
+      segments.push([
+        'ctx',
+        <Box>
+          <Text dimColor>ctx </Text>
+          <Text color={ctxTone(ctxPct)}>{bar(ctxPct, cells).on}</Text>
+          <Text dimColor>{bar(ctxPct, cells).off}</Text>
+          <Text color={ctxTone(ctxPct)}>{cells ? ' ' : ''}{ctxPct}%</Text>
+        </Box>,
+      ])
+    }
+    if (pref.bandChat) {
+      segments.push(['chat', <Text dimColor>chat: {await read($, chat)}</Text>])
+    }
+    if (pref.bandPaca && active) {
+      segments.push([
+        'paca',
+        <Box>
+          <Text inverse color="blue">
+            {' '}
+            {active.ref}{' '}
+          </Text>
+          <Text color="blue"> {active.status}: {short(active.title, 40)}</Text>
+        </Box>,
+      ])
+    }
+    if (pref.bandAgents && rows.length > 0) {
+      segments.push([
+        'agents',
+        <Box>
+          <Text color="green">● {run}</Text>
+          <Text color="yellow"> ◐ {idle}</Text>
+          <Text dimColor> / {rows.length}</Text>
+        </Box>,
+      ])
+    }
+    if (pref.bandInbox && msgs.length > 0) {
+      segments.push(['inbox', <Text color="yellow">✉ {msgs.length}</Text>])
+    }
+
+    const row = (
+      <Box flexWrap="wrap">
+        {segments.map(([key, node], i) => (
+          <Box key={`seg-${key}`} flexShrink={0}>
+            {i > 0 && dim}
+            {node}
           </Box>
-        )}
-        <Text dimColor>chat: {await read($, chat)}</Text>
-        {active && (
-          <Box>
-            {dim}
-            <Text inverse color="blue">
-              {' '}
-              {active.ref}{' '}
-            </Text>
-            <Text color="blue"> {active.status}: {short(active.title, 40)}</Text>
-          </Box>
-        )}
-        {rows.length > 0 && (
-          <Box>
-            {dim}
-            <Text color="green">● {run}</Text>
-            <Text color="yellow"> ◐ {idle}</Text>
-            <Text dimColor> / {rows.length}</Text>
-          </Box>
-        )}
-        {msgs.length > 0 && (
-          <Box>
-            {dim}
-            <Text color="yellow">✉ {msgs.length}</Text>
-          </Box>
-        )}
-        {dim}
-        <Button key="sessions" label="Sessioni" onPress={() => void toggleSessions($)} />
+        ))}
         {viewed && (
           <Text color="cyan"> │ vista: {short(viewedRow?.label ?? viewed, 30)} </Text>
         )}
         {viewed && (
           <Button key="back" label="Torna" onPress={() => void $.ui.view({})} />
         )}
+        <Box flexShrink={0}>
+          {(segments.length > 0 || viewed) && dim}
+          <Button key="menu" label="⋯" onPress={() => toggleMenu($)} />
+        </Box>
+      </Box>
+    )
+    if (!menuOpen) return row
+
+    // One toggle per saved choice: ☑ on, ☐ off. PACA only once the
+    // workspace has a project, as in the pane's menu.
+    const hasPaca = (await read($, pacaProject)) !== null
+    const toggles: [Switch, string][] = [
+      ['bandLimits', 'limiti'],
+      ['bandCtx', 'ctx'],
+      ['bandChat', 'chat'],
+      ...(hasPaca ? [['bandPaca', 'task PACA'] as [Switch, string]] : []),
+      ['bandAgents', 'agenti'],
+      ['bandInbox', 'messaggi'],
+    ]
+
+    return (
+      <Box flexDirection="column">
+        {row}
+        <Box flexWrap="wrap">
+          {toggles.map(([name, label]) => (
+            <Box key={`pref-box-${name}`} flexShrink={0}>
+              <Button
+                key={`pref-${name}`}
+                label={`${pref[name] ? '☑' : '☐'} ${label}`}
+                onPress={() => void setPrefs($, { [name]: !pref[name] })}
+              />
+              <Text dimColor>{' │ '}</Text>
+            </Box>
+          ))}
+          <Button key="menu-close" label="chiudi" onPress={() => toggleMenu($, false)} />
+        </Box>
       </Box>
     )
   })
@@ -458,12 +633,47 @@ export const register: Register = on => {
     const barCells = Math.max(8, Math.min(24, (e.viewport?.columns ?? 40) - 26))
     const lims = await read($, limits)
     const at = await read($, now)
+    const isClock = await read($, resetClock)
     const project = await read($, pacaProject)
     const backlog = await read($, pacaBacklog)
     const openTasks = (await read($, pacaTasks)).filter(isShownTask)
     const sessionsOpen = await read($, showSessions)
     const pacaOpen = await read($, showPaca)
     const active = await read($, pacaActive)
+    const pref = await read($, prefs)
+    // Only tabs whose section exists; a vanished one falls back to all.
+    const paneMenuOpen = await read($, showPaneMenu)
+    const hasLimits = lims.length > 0 && pref.paneLimits
+    const hasAgents = pref.paneAgents
+    const hasSessions = pref.paneSessions
+    const hasPaca = !!project && pref.panePaca
+    // The inbox stays even when empty, so it is clear where messages land.
+    const hasInbox = pref.paneInbox
+    const opened = await read($, openMsg)
+    const style = pref.tabStyle
+    const tabs: [Tab, string, string][] = (
+      [
+        ['all', true, undefined],
+        ['limits', hasLimits, undefined],
+        ['agents', hasAgents, rows.length],
+        ['sessions', hasSessions, undefined],
+        ['paca', hasPaca, openTasks.length],
+        ['inbox', hasInbox, msgs.length],
+      ] as [Tab, boolean, number | undefined][]
+    )
+      .filter(([, isOn]) => isOn)
+      .map(([name, , count]) => [name, `tab-${name}`, tabLabel(name, style, count)])
+    // One toggle per pane choice, each controlling only the pane.
+    const paneToggles: [Switch, string][] = [
+      ['paneLimits', 'limiti'],
+      ['paneAgents', 'agenti'],
+      ['paneSessions', 'sessioni'],
+      ...(project ? [['panePaca', 'PACA'] as [Switch, string]] : []),
+      ['paneInbox', 'messaggi'],
+      ['openPaneAtStart', "pannello all'avvio"],
+    ]
+    const tab: Tab = tabs.some(t => t[0] === pref.tab) ? pref.tab : 'all'
+    const isShown = (name: Tab) => tab === 'all' || tab === name
     // A rounded section with its title as the first line.
     const section = (title: string, tone: string | undefined, body: RenderChildren) => (
       <Box key={`sec-${title}`} flexDirection="column" borderStyle="round" borderColor={tone ?? 'gray'} paddingX={1}>
@@ -476,14 +686,53 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {lims.length > 0 &&
+        <Box flexWrap="wrap">
+          {tabs.map(([name, key, label]) => (
+            <Box key={`${key}-box`}>
+              <Button key={key} label={`${tab === name ? '▸ ' : ''}${label}`} onPress={() => void setPrefs($, { tab: name })} />
+              <Text> </Text>
+            </Box>
+          ))}
+          <Button key="pane-menu" label={tabLabel('settings', style)} onPress={() => togglePaneMenu($)} />
+        </Box>
+        {paneMenuOpen &&
+          section(
+            'Impostazioni',
+            undefined,
+            <Box flexDirection="column">
+              {paneToggles.map(([name, label]) => (
+                <Button
+                  key={`pref-${name}`}
+                  label={`${pref[name] ? '☑' : '☐'} ${label}`}
+                  onPress={() => void setPrefs($, { [name]: !pref[name] })}
+                />
+              ))}
+              <Box flexWrap="wrap">
+                <Text dimColor>schede: </Text>
+                {TAB_STYLES.map(([value, label]) => (
+                  <Box key={`tabStyle-box-${value}`} flexShrink={0}>
+                    <Button
+                      key={`tabStyle-${value}`}
+                      label={`${style === value ? '◉' : '○'} ${label}`}
+                      onPress={() => void setPrefs($, { tabStyle: value })}
+                    />
+                    <Text> </Text>
+                  </Box>
+                ))}
+              </Box>
+              <Button key="pane-menu-close" label="chiudi" onPress={() => void update($, showPaneMenu, () => false)} />
+            </Box>,
+          )}
+        {hasLimits &&
+          isShown('limits') &&
           section(
             'Limiti',
             undefined,
             lims.map(l => {
               const b = bar(l.percentUsed, barCells)
               const tone = limitTone(l.percentUsed)
-              const left = until(l.resetsAt, at)
+              const left = isClock ? clockAt(l.resetsAt, at) : until(l.resetsAt, at)
+              const label = isClock ? `reset ${left.includes(' ') ? '' : 'alle '}${left}` : `reset tra ${left}`
               return (
                 <Box key={`lim-${l.kind}`} flexDirection="column">
                   <Box>
@@ -492,12 +741,19 @@ export const register: Register = on => {
                     <Text dimColor>{b.off}</Text>
                     <Text color={tone}> {l.percentUsed}%</Text>
                   </Box>
-                  {left && <Text dimColor>{'     '}reset tra {left}</Text>}
+                  {left && (
+                    <Box>
+                      <Text>{'     '}</Text>
+                      <Button key={`reset-${l.kind}`} label={label} onPress={() => toggleResetClock($)} />
+                    </Box>
+                  )}
                 </Box>
               )
             }),
           )}
-        {section(
+        {hasAgents &&
+          isShown('agents') &&
+          section(
           'Agenti',
           'green',
           <Box flexDirection="column">
@@ -529,7 +785,9 @@ export const register: Register = on => {
             })}
           </Box>,
         )}
-        {section(
+        {hasSessions &&
+          isShown('sessions') &&
+          section(
           'Sessioni',
           'cyan',
           <Box flexDirection="column">
@@ -565,7 +823,8 @@ export const register: Register = on => {
               )}
           </Box>,
         )}
-        {project &&
+        {hasPaca &&
+          isShown('paca') &&
           section(
             'PACA',
             'blue',
@@ -619,19 +878,53 @@ export const register: Register = on => {
                 })}
             </Box>,
           )}
-        {msgs.length > 0 &&
+        {hasInbox &&
+          isShown('inbox') &&
           section(
-            `✉ Messaggi (${msgs.length})`,
-            'yellow',
+            msgs.length > 0 ? `✉ Messaggi (${msgs.length})` : '✉ Messaggi',
+            msgs.length > 0 ? 'yellow' : undefined,
             <Box flexDirection="column">
-              {msgs.slice(-5).map(m => (
-                <Text key={String(m.at)} wrap="truncate-end">
-                  <Text color="yellow">{short(m.from, 20)}</Text>
-                  <Text dimColor> › </Text>
-                  {m.text.replace(/\s+/g, ' ')}
-                </Text>
-              ))}
-              <Button key="clear" label="Svuota inbox" onPress={() => void update($, inbox, () => [])} />
+              {msgs.length === 0 && (
+                <Text dimColor>Nessun messaggio. Qui arrivano quelli delle altre sessioni (es. una chat verticale che ha finito).</Text>
+              )}
+              {msgs
+                .slice(-5)
+                .reverse()
+                .map(m => {
+                  const isOpen = opened === m.at
+                  // Only the arrow is a button: the text beside it is cut to
+                  // the pane's real width, which the viewport does not give.
+                  return (
+                    <Box key={`m-${m.at}`} flexDirection="column">
+                      <Box>
+                        <Button
+                          key={`msg-${m.at}`}
+                          label={isOpen ? '▾' : '▸'}
+                          onPress={() => void update($, openMsg, () => (isOpen ? null : m.at))}
+                        />
+                        <Text wrap="truncate-end">
+                          {' '}
+                          <Text dimColor>{hhmm(m.at)} · </Text>
+                          <Text color="yellow">{short(m.from, 20)}</Text>
+                          <Text dimColor> · </Text>
+                          {msgTitle(m.text)}
+                        </Text>
+                      </Box>
+                      {isOpen && <Text>{m.text}</Text>}
+                      {isOpen && (
+                        <Box>
+                          <Text dimColor>{'  └ '}</Text>
+                          <Button key={`copy-${m.at}`} label="Copia" onPress={() => void $.ui.copy({ text: m.text })} />
+                          <Text dimColor>{' │ '}</Text>
+                          <Button key={`quote-${m.at}`} label="Nel prompt" onPress={() => void $.prompt.fill({ text: m.text })} />
+                        </Box>
+                      )}
+                    </Box>
+                  )
+                })}
+              {msgs.length > 0 && (
+                <Button key="clear" label="Svuota inbox" onPress={() => void update($, inbox, () => [])} />
+              )}
             </Box>,
           )}
       </Box>
