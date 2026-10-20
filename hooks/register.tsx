@@ -23,8 +23,8 @@ import {
   limitTone,
   parseWindows,
   tree,
-  windowOfSession,
-  windowOfVertical,
+  locateSession,
+  locateVertical,
 } from './ui'
 
 // Multi-view: one pane with the session's agents (press one to view its
@@ -121,6 +121,7 @@ const turnLast = atom({ plugin: 'multi-view', key: 'turnLast' } as const, null)
 const tick = atom({ plugin: 'multi-view', key: 'tick' } as const, 0)
 const TURN_TICK_MS = 5000
 const tmuxWindows = atom({ plugin: 'multi-view', key: 'tmuxWindows' } as const, [])
+const runningSessions = atom({ plugin: 'multi-view', key: 'runningSessions' } as const, [])
 // Session id whose "chiudi" waits for a second press.
 const killPending = atom({ plugin: 'multi-view', key: 'killPending' } as const, null)
 const CONFIRM_MS = 5000
@@ -313,6 +314,23 @@ async function loadWindows($: EngineInterface) {
   const run = (await $.env.get('TMUX')) ? await $.process.run(['tmux', 'list-windows', '-a', '-F', '#{window_id} #{window_name}']) : undefined
   const list: TmuxWindow[] = run?.exitCode === 0 ? parseWindows(run.stdout) : []
   await update($, tmuxWindows, () => list)
+  await loadRunning($)
+}
+
+// Sessions running now (any tmux window name), from Claude Code's own registry.
+async function loadRunning($: EngineInterface) {
+  const home = (await $.env.get('HOME')) ?? ''
+  const run = await $.process.run(['python3', '-I', `${$.plugin.root}/hooks/running_sessions.py`, `${home}/.claude/sessions`])
+  let list: RunningSession[] = []
+  if (run.exitCode === 0) {
+    try {
+      const parsed = JSON.parse(run.stdout) as RunningSession[]
+      list = parsed.filter(r => typeof r?.sessionId === 'string')
+    } catch {
+      list = []
+    }
+  }
+  await update($, runningSessions, () => list)
 }
 
 // Vertical chats of this session, from chat-verticali's store (read only).
@@ -338,12 +356,12 @@ async function gotoWindow($: EngineInterface, windowId: string) {
 
 async function gotoVertical($: EngineInterface, v: Vertical) {
   await loadWindows($)
-  const window = windowOfVertical(await read($, tmuxWindows), v)
-  if (!window) {
-    $.ui.toast(`Nessuna finestra tmux per ${v.slug}`)
+  const found = locateVertical(await read($, runningSessions), await read($, tmuxWindows), v)
+  if (!found.windowId) {
+    $.ui.toast(found.open ? 'Aperta fuori da tmux' : `Nessuna finestra tmux per ${v.slug}`)
     return
   }
-  await gotoWindow($, window.id)
+  await gotoWindow($, found.windowId)
 }
 
 // Kills the tmux window of a running session: the first press asks, the second
@@ -357,12 +375,12 @@ async function closeWindow($: EngineInterface, row: SavedSession) {
   }
   await update($, killPending, () => null)
   await loadWindows($)
-  const window = windowOfSession(await read($, tmuxWindows), row.id)
-  if (!window) {
-    $.ui.toast('Finestra già chiusa')
+  const found = locateSession(await read($, runningSessions), await read($, tmuxWindows), row.id)
+  if (!found.windowId) {
+    $.ui.toast(found.open ? 'Aperta fuori da tmux' : 'Finestra già chiusa')
     return
   }
-  const run = await $.process.run(['tmux', 'kill-window', '-t', window.id])
+  const run = await $.process.run(['tmux', 'kill-window', '-t', found.windowId])
   $.ui.toast(run.exitCode === 0 ? `Finestra chiusa: ${short(row.title, 40)}` : `tmux: ${run.stderr.trim()}`)
   await loadWindows($)
 }
@@ -401,22 +419,27 @@ async function toggleSessions($: EngineInterface) {
 
 async function resumeSession($: EngineInterface, row: SavedSession) {
   const command = `claude --resume ${row.id}`
+  await update($, killPending, () => null)
+  // Never a second process for a session that is already running: the registry
+  // sees it whatever its window is called, the ·id8 name is the fallback.
+  await loadWindows($)
+  const found = locateSession(await read($, runningSessions), await read($, tmuxWindows), row.id)
+  if (found.windowId) {
+    await $.process.run(['tmux', 'select-window', '-t', found.windowId])
+    $.ui.toast('Già aperta: salto alla finestra')
+    return
+  }
+  if (found.open) {
+    $.ui.toast('Già aperta fuori da tmux')
+    return
+  }
   if (!(await $.env.get('TMUX'))) {
     await $.ui.copy({ text: command })
     $.ui.toast(`Fuori da tmux: copiato "${command}"`)
     return
   }
-  // The window name ends in the first 8 chars of the id: that is how an
-  // already running resume is found again.
+  // The window name ends in the first 8 chars of the id (fallback detection).
   const tag = `·${row.id.slice(0, 8)}`
-  await update($, killPending, () => null)
-  const windows = await $.process.run(['tmux', 'list-windows', '-a', '-F', '#{window_id} #{window_name}'])
-  const windowId = windows.exitCode === 0 ? windowOfSession(parseWindows(windows.stdout), row.id)?.id : undefined
-  if (windowId) {
-    await $.process.run(['tmux', 'select-window', '-t', windowId])
-    $.ui.toast('Già aperta: salto alla finestra')
-    return
-  }
   const cwd = await $.session.cwd()
   const run = await $.process.run(['tmux', 'new-window', '-c', cwd, '-n', `${short(row.title, 24)}${tag}`, 'claude', '--resume', row.id])
   $.ui.toast(run.exitCode === 0 ? `Ripresa in tmux: ${short(row.title, 40)}` : `tmux: ${run.stderr.trim()}`)
@@ -830,6 +853,7 @@ export const register: Register = on => {
     const opened = await read($, openMsg)
     const verts = await read($, verticals)
     const wins = await read($, tmuxWindows)
+    const running = await read($, runningSessions)
     const pendingKill = await read($, killPending)
     const hasVerticals = pref.paneVerticals && verts.length > 0
     const style = pref.tabStyle
@@ -991,11 +1015,11 @@ export const register: Register = on => {
                   )
                 }
                 // A session with an open tmux window: green dot, jump or close it.
-                const win = windowOfSession(wins, row.id)
+                const loc = locateSession(running, wins, row.id)
                 return (
                   <Box key={`s-${row.id}`} flexDirection="column">
                     <Box>
-                      {win ? <Text color="green">{'  ● '}</Text> : <Text dimColor>{'  ○ '}</Text>}
+                      {loc.open ? <Text color="green">{'  ● '}</Text> : <Text dimColor>{'  ○ '}</Text>}
                       {row.pacaRef && (
                         <Text inverse color={row.pacaRef === active?.ref ? 'blue' : undefined}>
                           {' '}
@@ -1010,16 +1034,22 @@ export const register: Register = on => {
                       />
                       <Text dimColor> {ago(row.mtime, at)}</Text>
                     </Box>
-                    {win && (
+                    {loc.open && (
                       <Box>
                         <Text dimColor>{'    └ '}</Text>
-                        <Button key={`go-${row.id}`} label="vai" onPress={() => void gotoWindow($, win.id)} />
-                        <Text dimColor>{' │ '}</Text>
                         <Button
-                          key={`kill-${row.id}`}
-                          label={pendingKill === row.id ? 'conferma?' : 'chiudi'}
-                          onPress={() => void closeWindow($, row)}
+                          key={`go-${row.id}`}
+                          label="vai"
+                          onPress={() => (loc.windowId ? void gotoWindow($, loc.windowId) : $.ui.toast('Aperta fuori da tmux'))}
                         />
+                        {loc.windowId && <Text dimColor>{' │ '}</Text>}
+                        {loc.windowId && (
+                          <Button
+                            key={`kill-${row.id}`}
+                            label={pendingKill === row.id ? 'conferma?' : 'chiudi'}
+                            onPress={() => void closeWindow($, row)}
+                          />
+                        )}
                       </Box>
                     )}
                   </Box>

@@ -35,6 +35,9 @@ export type GitInfo = {
 
 export type TmuxWindow = { id: string; name: string }
 
+// A running Claude Code session, from ~/.claude/sessions (only these keys).
+export type RunningSession = { sessionId: string; pid: number; windowId: string | null; paneId: string | null }
+
 export type Vertical = {
   id: string
   slug: string
@@ -96,6 +99,7 @@ declare module 'claude-code' {
       turnLast: number | null
       tick: number
       tmuxWindows: TmuxWindow[]
+      runningSessions: RunningSession[]
       killPending: string | null
       verticals: Vertical[]
     }

@@ -215,7 +215,7 @@ test('saved sessions list and resume in a new tmux window', async ($, on) => {
   on('process.run', ($, e) => {
     const argv = [...(e as { argv: string[] }).argv]
     runs.push(argv)
-    const stdout = argv[0] === 'python3' ? JSON.stringify(saved) : argv[1] === 'list-windows' ? windows : ''
+    const stdout = argv[0] === 'python3' ? (argv[2]?.endsWith('running_sessions.py') ? '[]' : JSON.stringify(saved)) : argv[1] === 'list-windows' ? windows : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await $.command.run({ command: 'sessioni', args: '' } as never)
@@ -231,7 +231,7 @@ test('saved sessions list and resume in a new tmux window', async ($, on) => {
   windows = '@1 bash\n@7 altro·old\n'
   const before = runs.length
   await ui.press({ key: 'resume-old' })
-  expect(runs.slice(before).map(r => r[1])).toEqual(['list-windows', 'select-window'])
+  expect(runs.slice(before).filter(r => r[0] === 'tmux').map(r => r[1])).toEqual(['list-windows', 'select-window'])
   expect(runs.at(-1)).toEqual(['tmux', 'select-window', '-t', '@7'])
 })
 
@@ -615,7 +615,10 @@ test('sessions with an open tmux window get a green dot, vai and a confirmed chi
   on('process.run', ($, e) => {
     const argv = [...e.argv]
     runs.push(argv)
-    if (argv[0] === 'python3') return result(argv[2]?.endsWith('list_verticals.py') ? '[]' : JSON.stringify(saved))
+    if (argv[0] === 'python3') {
+      if (argv[2]?.endsWith('running_sessions.py')) return result('[]')
+      return result(argv[2]?.endsWith('list_verticals.py') ? '[]' : JSON.stringify(saved))
+    }
     if (argv[1] === 'kill-window') windows = ''
     return result(argv[1] === 'list-windows' ? windows : '')
   })
@@ -647,6 +650,7 @@ test('sessions with an open tmux window get a green dot, vai and a confirmed chi
 test('the Verticali section lists this chat\'s verticals and jumps to their window', async ($, on) => {
   const toasts: string[] = []
   const runs: string[][] = []
+  let running: object[] = []
   const verticals = [
     { id: 'v1aaaaaaa', slug: 'fix-banda', title: 'Sistema la banda del pannello con un titolo lungo', status: 'active', contextPercent: 42, createdAt: '2026-10-20' },
     { id: 'v2bbbbbbb', slug: 'docs', title: 'README', status: 'paused', contextPercent: null, createdAt: '2026-10-19' },
@@ -666,6 +670,7 @@ test('the Verticali section lists this chat\'s verticals and jumps to their wind
     const argv = [...e.argv]
     runs.push(argv)
     if (argv[0] === 'python3') {
+      if (argv[2]?.endsWith('running_sessions.py')) return result(JSON.stringify(running))
       return result(argv[2]?.endsWith('list_verticals.py') ? JSON.stringify(verticals) : '[]')
     }
     return result(argv[1] === 'list-windows' ? '@1 bash\n@4 fix-banda\n@5 x·v3cccccc\n' : '')
@@ -689,10 +694,67 @@ test('the Verticali section lists this chat\'s verticals and jumps to their wind
   expect(runs.at(-1)).toEqual(['tmux', 'select-window', '-t', '@5'])
   await ui.press({ key: 'vgo-v2bbbbbbb' })
   expect(toasts.at(-1)).toBe('Nessuna finestra tmux per docs')
+  // The running registry wins, whatever the window is called.
+  running = [{ sessionId: 'v2bbbbbbb', pid: 1, windowId: '@9', paneId: '%9' }]
+  await ui.press({ key: 'vgo-v2bbbbbbb' })
+  expect(runs.at(-1)).toEqual(['tmux', 'select-window', '-t', '@9'])
+  running = [{ sessionId: 'v2bbbbbbb', pid: 1, windowId: null, paneId: null }]
+  await ui.press({ key: 'vgo-v2bbbbbbb' })
+  expect(toasts.at(-1)).toBe('Aperta fuori da tmux')
+  running = []
   // Switch off: section and tab go.
   await ui.press({ key: 'pane-menu' })
   expect(await ui.findAll({ type: 'Button', text: '☑ verticali' })).toHaveLength(1)
   await ui.press({ key: 'pref-paneVerticals' })
   expect(await ui.findAll({ type: 'Text', text: /^Verticali$/ } as never)).toHaveLength(0)
   expect(await ui.findAll({ type: 'Button', key: 'tab-verticals' } as never)).toHaveLength(0)
+})
+
+test('a session in the running registry is never resumed twice', async ($, on) => {
+  const runs: string[][] = []
+  const toasts: string[] = []
+  let running: object[] = []
+  const saved = [
+    { id: 'cur', title: 'Questa chat', mtime: 1, isCurrent: true },
+    { id: 'runrunrun', title: 'Sessione viva', mtime: 1, isCurrent: false },
+  ]
+  on('env.get', ($, e) => ({ value: (e as { name: string }).name === 'TMUX' ? '/tmp/tmux' : '/home/u' }))
+  on('session.cwd', () => ({ value: '/home/u/repo' }))
+  on('session.id', () => ({ value: 'cur' }))
+  on('clock.now', () => ({ value: 120_000 }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', ($, e) => {
+    toasts.push(String((e as { text: string }).text))
+    return { value: undefined }
+  })
+  on('process.run', ($, e) => {
+    const argv = [...e.argv]
+    runs.push(argv)
+    if (argv[0] === 'python3') {
+      if (argv[2]?.endsWith('running_sessions.py')) return result(JSON.stringify(running))
+      return result(argv[2]?.endsWith('list_verticals.py') ? '[]' : JSON.stringify(saved))
+    }
+    return result(argv[1] === 'list-windows' ? '@1 bash\n@12 chat originale\n' : '')
+  })
+  await $.command.run({ command: 'sessioni', args: '' } as never)
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.findAll({ type: 'Button', text: 'vai' })).toHaveLength(0)
+  // Started after the list was loaded: resume reloads the registry first.
+  running = [{ sessionId: 'runrunrun', pid: 1, windowId: '@12', paneId: '%12' }]
+  await ui.press({ key: 'resume-runrunrun' })
+  await ui.press({ key: 'resume-runrunrun' })
+  expect(runs.some(r => r[1] === 'new-window')).toBe(false)
+  expect(runs.at(-1)).toEqual(['tmux', 'select-window', '-t', '@12'])
+  expect(toasts.at(-1)).toBe('Già aperta: salto alla finestra')
+  // The window is not named ·id8: the dot, vai and chiudi still show.
+  expect(await ui.findAll({ type: 'Button', key: 'go-runrunrun' } as never)).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Button', key: 'kill-runrunrun' } as never)).toHaveLength(1)
+  // Running outside tmux: no window to jump to, no chiudi, no new process.
+  running = [{ sessionId: 'runrunrun', pid: 1, windowId: null, paneId: null }]
+  await ui.press({ key: 'resume-runrunrun' })
+  expect(toasts.at(-1)).toBe('Già aperta fuori da tmux')
+  expect(runs.some(r => r[1] === 'new-window')).toBe(false)
+  expect(await ui.findAll({ type: 'Button', key: 'kill-runrunrun' } as never)).toHaveLength(0)
+  await ui.press({ key: 'go-runrunrun' })
+  expect(toasts.at(-1)).toBe('Aperta fuori da tmux')
 })

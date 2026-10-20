@@ -1,4 +1,4 @@
-import type { AgentRow, TmuxWindow, Vertical } from '../types'
+import type { AgentRow, RunningSession, TmuxWindow, Vertical } from '../types'
 
 // Pure presentation helpers for register.tsx: glyphs, colors and strings only,
 // no elements, so they hold no `$` and need no atom.
@@ -85,6 +85,26 @@ export const windowOfSession = (windows: TmuxWindow[], id: string) =>
 // A vertical's window: named by its slug, or by a resume (·<id8>).
 export const windowOfVertical = (windows: TmuxWindow[], v: Pick<Vertical, 'id' | 'slug'>) =>
   windows.find(w => w.name === v.slug) ?? windowOfSession(windows, v.id)
+
+// Where a session lives: the running registry first (any window name), then
+// the ·id8 window-name suffix. open without windowId: running outside tmux.
+export type Located = { open: boolean; windowId?: string }
+export const locateSession = (running: RunningSession[], windows: TmuxWindow[], id: string): Located => {
+  const r = running.find(x => x.sessionId === id)
+  if (r?.windowId) return { open: true, windowId: r.windowId }
+  const named = windowOfSession(windows, id)
+  if (named) return { open: true, windowId: named.id }
+  return { open: !!r }
+}
+
+// A vertical: running registry by its id, else slug or ·id8 window name.
+export const locateVertical = (running: RunningSession[], windows: TmuxWindow[], v: Pick<Vertical, 'id' | 'slug'>): Located => {
+  const r = running.find(x => x.sessionId === v.id)
+  if (r?.windowId) return { open: true, windowId: r.windowId }
+  const named = windowOfVertical(windows, v)
+  if (named) return { open: true, windowId: named.id }
+  return { open: !!r }
+}
 
 type Tone = { glyph: string; color?: string; dim: boolean }
 
