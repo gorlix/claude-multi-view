@@ -253,6 +253,33 @@ async function whereFrom($: EngineInterface) {
   return title ? `${project} · ${short(title, 50)}` : project
 }
 
+// A hidden desktop entry the notifications point to (desktop-entry hint): KDE
+// keeps them in its history and lists "Claude multi-view" in its settings.
+const DESKTOP_ID = 'claude-multi-view'
+const DESKTOP_ENTRY = [
+  '[Desktop Entry]',
+  'Type=Application',
+  'Name=Claude multi-view',
+  'Comment=Notifiche delle chat di Claude Code',
+  'Icon=claude-desktop',
+  'Exec=true',
+  'NoDisplay=true',
+  '',
+].join('\n')
+let desktopReady = false
+
+async function ensureDesktopEntry($: EngineInterface) {
+  if (desktopReady) return
+  const data = (await $.env.get('XDG_DATA_HOME')) || `${(await $.env.get('HOME')) ?? ''}/.local/share`
+  const path = `${data}/applications/${DESKTOP_ID}.desktop`
+  const now = await $.fs.read(path).catch(() => '')
+  if (now !== DESKTOP_ENTRY) {
+    await $.fs.write(path, DESKTOP_ENTRY)
+    await $.process.run(['kbuildsycoca6']).catch(() => undefined)
+  }
+  desktopReady = true
+}
+
 // A desktop notification, only when nobody is looking at this window: in tmux
 // that is when its window is the active one of an attached session. Never throws.
 async function notify($: EngineInterface, note: Note) {
@@ -264,7 +291,9 @@ async function notify($: EngineInterface, note: Note) {
       if (seen.exitCode === 0 && seen.stdout.trim() === '11') return
     }
     const urgency = note.isUrgent ? 'critical' : 'normal'
-    await $.process.run(['notify-send', '-a', 'Claude', '-i', note.icon, '-u', urgency, await whereFrom($), note.body])
+    await ensureDesktopEntry($).catch(() => undefined)
+    const hint = `string:desktop-entry:${DESKTOP_ID}`
+    await $.process.run(['notify-send', '-a', 'Claude', '-h', hint, '-i', note.icon, '-u', urgency, await whereFrom($), note.body])
   } catch {
     // Best effort.
   }

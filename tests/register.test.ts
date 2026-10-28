@@ -547,6 +547,11 @@ const notifySetup = (on: Parameters<TestBody>[1], env: Record<string, string>, a
   on('env.get', ($, e) => ({ value: env[(e as { name: string }).name] }))
   on('session.cwd', () => ({ value: '/home/u/repo' }))
   on('session.id', () => ({ value: 'cur' }))
+  on('fs.read', () => ({ value: '' }))
+  on('fs.write', ($, e) => {
+    runs.push(['fs.write', (e as { path: string }).path])
+    return { value: undefined }
+  })
   on('agent.list', () => ({ value: [{ id: 'a1', description: 'audit file', type: 'Explore', status: agentNow.status }] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -568,11 +573,12 @@ const finishAgent = async ($: Parameters<TestBody>[0]) => {
 }
 
 test('a finished agent sends a desktop notification outside tmux', async ($, on) => {
-  const runs = notifySetup(on, {})
+  const runs = notifySetup(on, { HOME: '/h' })
   await finishAgent($)
   expect(runs.filter(r => r[0] === 'notify-send')).toEqual([
-    ['notify-send', '-a', 'Claude', '-i', 'dialog-information', '-u', 'normal', 'repo · Fix notifiche', 'Agente finito: audit file'],
+    ['notify-send', '-a', 'Claude', '-h', 'string:desktop-entry:claude-multi-view', '-i', 'dialog-information', '-u', 'normal', 'repo · Fix notifiche', 'Agente finito: audit file'],
   ])
+  expect(runs.filter(r => r[0] === 'fs.write')).toEqual([['fs.write', '/h/.local/share/applications/claude-multi-view.desktop']])
 })
 
 test('in tmux the notification is skipped only when this window is the one in view', async ($, on) => {
@@ -596,8 +602,8 @@ test('limit thresholds and inbox messages notify, and the pane switch turns it o
   await $.session.receive({ origin: { kind: 'peer', teammate: 'verticale-a' }, text: 'Finito. Resta il README' } as never)
   await drain()
   expect(runs.filter(r => r[0] === 'notify-send').map(r => r.slice(3))).toEqual([
-    ['-i', 'dialog-warning', '-u', 'normal', 'repo · Fix notifiche', "Limite 5h all'85%"],
-    ['-i', 'mail-unread', '-u', 'normal', 'repo · Fix notifiche', 'Da verticale-a:\nFinito. Resta il README'],
+    ['-h', 'string:desktop-entry:claude-multi-view', '-i', 'dialog-warning', '-u', 'normal', 'repo · Fix notifiche', "Limite 5h all'85%"],
+    ['-h', 'string:desktop-entry:claude-multi-view', '-i', 'mail-unread', '-u', 'normal', 'repo · Fix notifiche', 'Da verticale-a:\nFinito. Resta il README'],
   ])
   const ui = await $.ui.mount(pane('terminal'))
   await ui.press({ key: 'pane-menu' })
