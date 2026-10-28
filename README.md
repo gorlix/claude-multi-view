@@ -248,7 +248,15 @@ La mod rinomina solo finestre che può considerare sue: quelle che tmux rinomina
 
 ### Notifiche desktop
 
-Oltre al toast, la mod lancia `notify-send -a "Claude multi-view" <titolo> <corpo>` (un unico helper `notify`) quando un agente finisce (`Agente completed` / nome), quando un limite supera l'80% o il 90% (`Limite 5h` / `al 85%`) e quando arriva un messaggio da un'altra sessione (`Messaggio da <mittente>` / titolo). Parte solo se non stai guardando: dentro tmux (`TMUX_PANE`) viene saltata quando la finestra di questo pannello è quella attiva di una sessione collegata (`tmux display-message -p -t $TMUX_PANE '#{window_active}#{session_attached}'` uguale a `11`); fuori da tmux parte sempre. Gli errori (niente `notify-send`, niente demone di notifiche) sono silenziosi. Si spegne dal `⚙` del pannello (`notifiche desktop`).
+Oltre al toast, la mod lancia `notify-send -a Claude -i <icona> -u <urgenza> <titolo> <corpo>` (un unico helper `notify`). Il titolo dice da dove arriva: `<cartella del progetto> · <titolo della chat>` (il titolo come in tmux, da `session_title.py`); il corpo dice cosa è successo.
+
+| Quando | Corpo | Icona, urgenza |
+| --- | --- | --- |
+| un agente finisce | `Agente finito: <nome>` (o `fallito`, `fermato`, `in attesa`) | `dialog-information` (`dialog-error` e critica se fallito) |
+| un limite supera l'80% o il 90% | `Limite 5h all'85%, si azzera alle 18:40 (tra 2h10m)` | `dialog-warning`, critica dal 90% |
+| arriva un messaggio da un'altra sessione | `Da <mittente>:` e il testo del messaggio (fino a 300 caratteri) | `mail-unread` |
+
+Parte solo se non stai guardando: dentro tmux (`TMUX_PANE`) viene saltata quando la finestra di questo pannello è quella attiva di una sessione collegata (`tmux display-message -p -t $TMUX_PANE '#{window_active}#{session_attached}'` uguale a `11`); fuori da tmux parte sempre. Gli errori (niente `notify-send`, niente demone di notifiche) sono silenziosi. Si spegne dal `⚙` del pannello (`notifiche desktop`).
 
 ### Notifiche (toast)
 

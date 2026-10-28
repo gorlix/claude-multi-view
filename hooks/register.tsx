@@ -229,9 +229,33 @@ const ago = (mtime: number, at: number) => {
 const short = (text: string, max: number) =>
   text.length > max ? `${text.slice(0, max - 1)}…` : text
 
+// Agent end states as a notification heading: word and freedesktop icon.
+const AGENT_END: Record<string, { word: string; icon: string }> = {
+  completed: { word: 'finito', icon: 'dialog-information' },
+  failed: { word: 'fallito', icon: 'dialog-error' },
+  killed: { word: 'fermato', icon: 'process-stop' },
+  idle: { word: 'in attesa', icon: 'dialog-information' },
+}
+
+// "all'85%", "al 90%": the article follows how the number is read aloud.
+const alPercent = (n: number) => `${/^(8|11)/.test(String(Math.round(n))) ? "all'" : 'al '}${n}%`
+
+type Note = { body: string; icon: string; isUrgent?: boolean }
+
+// "claude-multi-view · Fix notifiche": the notification title, since it is
+// read away from this window and must say which chat is calling.
+async function whereFrom($: EngineInterface) {
+  const cwd = await $.session.cwd()
+  const project = cwd.split('/').filter(Boolean).pop() ?? cwd
+  const script = `${$.plugin.root}/hooks/session_title.py`
+  const titled = await $.process.run(['python3', '-I', script, `${await projectDir($)}/${await $.session.id()}.jsonl`])
+  const title = titled.exitCode === 0 ? titled.stdout.trim() : ''
+  return title ? `${project} · ${short(title, 50)}` : project
+}
+
 // A desktop notification, only when nobody is looking at this window: in tmux
 // that is when its window is the active one of an attached session. Never throws.
-async function notify($: EngineInterface, title: string, body: string) {
+async function notify($: EngineInterface, note: Note) {
   try {
     if (!(await read($, prefs)).notifyDesktop) return
     const pane = await $.env.get('TMUX_PANE')
@@ -239,7 +263,8 @@ async function notify($: EngineInterface, title: string, body: string) {
       const seen = await $.process.run(['tmux', 'display-message', '-p', '-t', pane, '#{window_active}#{session_attached}'])
       if (seen.exitCode === 0 && seen.stdout.trim() === '11') return
     }
-    await $.process.run(['notify-send', '-a', 'Claude multi-view', title, body])
+    const urgency = note.isUrgent ? 'critical' : 'normal'
+    await $.process.run(['notify-send', '-a', 'Claude', '-i', note.icon, '-u', urgency, await whereFrom($), note.body])
   } catch {
     // Best effort.
   }
@@ -254,7 +279,8 @@ async function poll($: EngineInterface) {
     const before = last.get(row.id)
     if (before && ACTIVE.has(before) && DONE.has(row.status)) {
       $.ui.toast(`Agente ${row.status}: ${short(row.label, 40)}`)
-      void notify($, `Agente ${row.status}`, short(row.label, 80))
+      const end = AGENT_END[row.status] ?? AGENT_END.completed
+      void notify($, { body: `Agente ${end.word}: ${short(row.label, 80)}`, icon: end.icon, isUrgent: row.status === 'failed' })
     }
   }
   last = new Map(rows.map(r => [r.id, r.status]))
@@ -270,12 +296,19 @@ async function setLimits($: EngineInterface, raw: readonly SessionRateLimit[]) {
   const list: Limit[] = raw
     .filter(l => l.kind in LIMIT_NAMES)
     .map(l => ({ kind: l.kind, percentUsed: l.percentUsed, resetsAt: l.resetsAt }))
+  // Read before the loop: no await inside it, so concurrent calls warn once.
+  const at = await $.clock.now().catch(() => 0)
   for (const l of list) {
     const before = warned.get(l.kind) ?? 0
     const hit = THRESHOLDS.find(t => l.percentUsed >= t) ?? 0
     if (hit > before) {
       $.ui.toast(`Limite ${LIMIT_NAMES[l.kind]} al ${l.percentUsed}%`)
-      void notify($, `Limite ${LIMIT_NAMES[l.kind]}`, `al ${l.percentUsed}%`)
+      const reset = clockAt(l.resetsAt, at)
+      void notify($, {
+        body: `Limite ${LIMIT_NAMES[l.kind]} ${alPercent(l.percentUsed)}${reset ? `, si azzera alle ${reset} (tra ${until(l.resetsAt, at)})` : ''}`,
+        icon: 'dialog-warning',
+        isUrgent: hit >= 90,
+      })
     }
     warned.set(l.kind, hit)
   }
@@ -654,7 +687,7 @@ export const register: Register = on => {
       const item: InboxItem = { at: await $.clock.now(), from, text: body.text }
       await update($, inbox, list => [...list, item].slice(-INBOX_MAX))
       $.ui.toast(`Messaggio da ${short(from, 30)}`)
-      void notify($, `Messaggio da ${short(from, 30)}`, short(msgTitle(body.text), 100))
+      void notify($, { body: `Da ${short(from, 30)}:\n${short(body.text.trim(), 300)}`, icon: 'mail-unread' })
     }
     await record().catch(() => undefined)
 

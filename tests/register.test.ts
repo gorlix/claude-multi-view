@@ -538,17 +538,22 @@ test('turn timer runs while a turn does and keeps the last duration after', asyn
   expect(await band.findAll({ type: 'Text', text: /⏱/ })).toHaveLength(0)
 })
 
-// Runs notify-send/tmux are mocked: nothing real is sent.
+// Runs notify-send/tmux are mocked: nothing real is sent. notify is fired
+// and forgotten, so a test drains pending work before looking at the runs.
+const drain = () => new Promise(r => setTimeout(r, 10))
 const agentNow = { status: 'running' as AgentStatus }
 const notifySetup = (on: Parameters<TestBody>[1], env: Record<string, string>, active = () => '11') => {
   const runs: string[][] = []
   on('env.get', ($, e) => ({ value: env[(e as { name: string }).name] }))
+  on('session.cwd', () => ({ value: '/home/u/repo' }))
+  on('session.id', () => ({ value: 'cur' }))
   on('agent.list', () => ({ value: [{ id: 'a1', description: 'audit file', type: 'Explore', status: agentNow.status }] }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
   on('process.run', ($, e) => {
     const argv = [...e.argv]
     runs.push(argv)
+    if (argv[0] === 'python3') return result('Fix notifiche\n')
     return result(argv[1] === 'display-message' ? `${active()}\n` : '')
   })
   return runs
@@ -559,12 +564,15 @@ const finishAgent = async ($: Parameters<TestBody>[0]) => {
   await $.command.run({ command: 'agenti', args: '' } as never)
   agentNow.status = 'completed'
   await $.command.run({ command: 'agenti', args: '' } as never)
+  await drain()
 }
 
 test('a finished agent sends a desktop notification outside tmux', async ($, on) => {
   const runs = notifySetup(on, {})
   await finishAgent($)
-  expect(runs.filter(r => r[0] === 'notify-send')).toEqual([['notify-send', '-a', 'Claude multi-view', 'Agente completed', 'audit file']])
+  expect(runs.filter(r => r[0] === 'notify-send')).toEqual([
+    ['notify-send', '-a', 'Claude', '-i', 'dialog-information', '-u', 'normal', 'repo · Fix notifiche', 'Agente finito: audit file'],
+  ])
 })
 
 test('in tmux the notification is skipped only when this window is the one in view', async ($, on) => {
@@ -586,15 +594,17 @@ test('limit thresholds and inbox messages notify, and the pane switch turns it o
   on('clock.now', () => ({ value: 1 }))
   await $.session.measure({ context: { window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 85 }], changed: ['rateLimits'] } as never)
   await $.session.receive({ origin: { kind: 'peer', teammate: 'verticale-a' }, text: 'Finito. Resta il README' } as never)
+  await drain()
   expect(runs.filter(r => r[0] === 'notify-send').map(r => r.slice(3))).toEqual([
-    ['Limite 5h', 'al 85%'],
-    ['Messaggio da verticale-a', 'Finito'],
+    ['-i', 'dialog-warning', '-u', 'normal', 'repo · Fix notifiche', "Limite 5h all'85%"],
+    ['-i', 'mail-unread', '-u', 'normal', 'repo · Fix notifiche', 'Da verticale-a:\nFinito. Resta il README'],
   ])
   const ui = await $.ui.mount(pane('terminal'))
   await ui.press({ key: 'pane-menu' })
   expect(await ui.findAll({ type: 'Button', text: '☑ notifiche desktop' })).toHaveLength(1)
   await ui.press({ key: 'pref-notifyDesktop' })
   await $.session.receive({ origin: { kind: 'peer', teammate: 'altro' }, text: 'x' } as never)
+  await drain()
   expect(runs.filter(r => r[0] === 'notify-send')).toHaveLength(2)
 })
 
